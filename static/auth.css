@@ -1,0 +1,359 @@
+/* Masseberegning - access gate and admin page.
+ *
+ * Kept in its own file so style.css stays the map application's stylesheet.
+ * Colours follow the teal accent already used for the drawn polygon.
+ */
+
+/* This has to come first, and it has to be !important.
+ *
+ * The gate, the account chip and the superadmin badge are all toggled with the
+ * `hidden` attribute, and they all carry a class that sets `display`. A class
+ * selector beats the browser's built-in `[hidden] { display: none }`, so
+ * without this rule `hidden` silently stops working on exactly those elements:
+ * the gate stays on top of the app after sign-in and swallows every click, and
+ * a normal user sees a "superadmin" badge. */
+[hidden] { display: none !important; }
+
+:root {
+  --gate-ink: #1a1d21;
+  --gate-dim: #5b6570;
+  --gate-line: #e2e6ea;
+  --gate-accent: #0f766e;
+  --gate-bg: #f6f7f8;
+}
+
+/* ------------------------------------------------------------------ gate */
+
+.gate {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--gate-bg);
+  overflow-y: auto;
+}
+
+.gate-card {
+  width: 100%;
+  max-width: 400px;
+  background: #fff;
+  border: 1px solid var(--gate-line);
+  border-radius: 12px;
+  padding: 32px 28px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 8px 24px rgba(16, 24, 40, .06);
+}
+
+.gate-card h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  letter-spacing: -.01em;
+  color: var(--gate-ink);
+}
+
+.gate-lead {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--gate-dim);
+}
+
+.gate-lead strong { color: var(--gate-ink); }
+
+.gate-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.gate-actions .btn { width: 100%; justify-content: center; }
+
+.gate-or {
+  position: relative;
+  text-align: center;
+  margin: 20px 0 16px;
+}
+
+.gate-or::before {
+  content: '';
+  position: absolute;
+  inset: 50% 0 auto;
+  height: 1px;
+  background: var(--gate-line);
+}
+
+.gate-or span {
+  position: relative;
+  background: #fff;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--gate-dim);
+}
+
+.gate-email { display: flex; flex-direction: column; gap: 6px; }
+
+.gate-email label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gate-ink);
+}
+
+.gate-email input {
+  padding: 9px 11px;
+  font: inherit;
+  font-size: 14px;
+  border: 1px solid var(--gate-line);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.gate-email input:focus {
+  outline: 2px solid color-mix(in srgb, var(--gate-accent) 35%, transparent);
+  outline-offset: 1px;
+  border-color: var(--gate-accent);
+}
+
+.gate-email .btn { margin-top: 4px; width: 100%; justify-content: center; }
+
+.gate-msg {
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+  line-height: 1.45;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+
+.gate-foot {
+  margin: 24px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--gate-line);
+  font-size: 11px;
+  color: var(--gate-dim);
+}
+
+/* ------------------------------------------------------- account chip */
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--gate-dim);
+  flex-wrap: wrap;
+}
+
+.account-email {
+  font-weight: 600;
+  color: var(--gate-ink);
+  overflow-wrap: anywhere;
+}
+
+.account a, .account button {
+  font: inherit;
+  font-size: 12px;
+  color: var(--gate-accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  background: color-mix(in srgb, var(--gate-accent) 12%, #fff);
+  color: var(--gate-accent);
+  border: 1px solid color-mix(in srgb, var(--gate-accent) 30%, #fff);
+}
+
+/* ----------------------------------------------------------- admin page */
+
+.admin {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 28px 20px 64px;
+  color: var(--gate-ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.admin-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--gate-line);
+}
+
+.admin-head h1 { margin: 0; font-size: 20px; }
+
+.admin section { margin-bottom: 36px; }
+
+.admin h2 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--gate-dim);
+  margin: 0 0 12px;
+}
+
+.admin-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  align-items: end;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid var(--gate-line);
+  border-radius: 10px;
+}
+
+.admin-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.admin-form input, .admin-form select {
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  border: 1px solid var(--gate-line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.admin table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  background: #fff;
+}
+
+.admin-scroll { overflow-x: auto; border: 1px solid var(--gate-line); border-radius: 10px; }
+
+.admin th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--gate-dim);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--gate-line);
+  white-space: nowrap;
+}
+
+.admin td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f0f2f4;
+  vertical-align: middle;
+}
+
+.admin tr:last-child td { border-bottom: 0; }
+
+.admin .dim { color: var(--gate-dim); }
+.admin .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.pill.active    { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+.pill.expired,
+.pill.used_up   { background: #f8fafc; color: #64748b; border-color: #e2e8f0; }
+.pill.revoked,
+.pill.suspended { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+
+.invite-result {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+}
+
+.invite-result p { margin: 0 0 8px; font-size: 13px; color: #065f46; }
+
+.invite-link {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.invite-link input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  font: 12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  border: 1px solid #a7f3d0;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.admin .btn {
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--gate-line);
+  background: #fff;
+  color: var(--gate-ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.admin .btn:hover { background: #f8fafc; }
+.admin .btn:disabled { opacity: .5; cursor: default; }
+
+.admin .btn-primary {
+  background: var(--gate-accent);
+  border-color: var(--gate-accent);
+  color: #fff;
+}
+
+.admin .btn-primary:hover { background: #0b5d56; }
+
+.admin .btn-small { padding: 4px 9px; font-size: 12px; }
+
+.admin .btn-danger { color: #b91c1c; border-color: #fecaca; }
+.admin .btn-danger:hover { background: #fef2f2; }
+
+.admin-msg {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+
+.admin-msg.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+.admin-msg.ok    { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+
+.admin-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--gate-dim);
+  font-size: 13px;
+}
+
+.admin-hint { font-size: 12px; color: var(--gate-dim); margin: 8px 0 0; }

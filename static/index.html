@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- An invitation token arrives as ?invitasjon=... in the URL. Without this,
+     every outbound request the page makes - including every Kartverket map
+     tile - would carry that token in its Referer header. auth.js also strips
+     the token from the URL on load; both are needed. -->
+<meta name="referrer" content="no-referrer">
+<title>Masseberegning – terrengvolum fra Kartverket</title>
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="vendor/leaflet.draw.css">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="auth.css">
+</head>
+<body>
+
+<!-- Access gate. A full-screen overlay, so the map behind it can initialise
+     at its real size instead of needing invalidateSize() after every reveal. -->
+<div class="gate" id="gate" hidden></div>
+
+<div class="app">
+
+  <aside class="panel">
+    <header class="panel-head">
+      <h1>Masseberegning</h1>
+      <p>Skjæring og fylling beregnet på Kartverkets terrengmodell (DTM 1&nbsp;m)</p>
+    </header>
+
+    <div class="panel-body">
+
+      <!-- 1. AREA ------------------------------------------------------- -->
+      <section class="step">
+        <h2><span class="num">1</span> Område</h2>
+
+        <div class="search-row">
+          <input id="search" type="search" placeholder="Søk stedsnavn eller lim inn koordinater" autocomplete="off">
+          <div id="search-results" class="search-results" hidden></div>
+        </div>
+        <p class="hint">Koordinater fra Google Maps limes rett inn, f.eks. <code>61.1153, 10.4662</code>.</p>
+
+        <div class="btn-row">
+          <button id="btn-draw" class="btn btn-primary">Tegn polygon</button>
+          <button id="btn-square" class="btn">Rute rundt punkt</button>
+          <button id="btn-clear" class="btn btn-ghost">Nullstill</button>
+        </div>
+
+        <div class="square-opts" id="square-opts" hidden>
+          <label>Sidelengde
+            <span class="input-unit"><input id="square-size" type="number" value="1000" min="20" max="5000" step="10"><span>m</span></span>
+          </label>
+          <p class="hint">Plasseres rundt kartets midtpunkt.</p>
+        </div>
+
+        <div class="readout" id="area-readout">
+          <span class="readout-label">Ingen flate valgt</span>
+        </div>
+      </section>
+
+      <!-- 2. TARGET LEVEL ----------------------------------------------- -->
+      <section class="step">
+        <h2><span class="num">2</span> Ferdig planum</h2>
+
+        <div class="radios">
+          <label class="radio">
+            <input type="radio" name="mode" value="balansert" checked>
+            <span class="radio-body">
+              <strong>Balansert</strong>
+              <em>Skjæring dekker fyllingen – ingen masser inn eller ut</em>
+            </span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="mode" value="laveste">
+            <span class="radio-body">
+              <strong>Laveste punkt</strong>
+              <em>Alt skjæres ned til terrengets laveste kote – ingen fylling</em>
+            </span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="mode" value="fast">
+            <span class="radio-body">
+              <strong>Fast kote</strong>
+              <em>Du oppgir ferdig høyde over havet</em>
+            </span>
+          </label>
+        </div>
+
+        <div class="fixed-opts" id="fixed-opts" hidden>
+          <label>Kotehøyde
+            <span class="input-unit"><input id="fixed-level" type="number" value="100" step="0.5"><span>moh</span></span>
+          </label>
+          <button id="btn-pick" class="btn btn-small">Hent høyde ved klikk i kart</button>
+        </div>
+      </section>
+
+      <!-- 3. MATERIAL ---------------------------------------------------- -->
+      <section class="step">
+        <h2><span class="num">3</span> Løsmasse og fjell</h2>
+
+        <label class="slider-label">
+          Løsmassedybde
+          <output id="soil-out">2,0 m</output>
+        </label>
+        <input id="soil-depth" class="slider" type="range" min="0" max="20" step="0.5" value="2">
+        <div class="slider-scale"><span>0 m<br><em>alt er fjell</em></span><span>20 m<br><em>alt er løsmasse</em></span></div>
+        <p class="hint">De øverste metrene av skjæringen regnes som løsmasse, alt dypere som fjell.</p>
+
+        <details class="advanced">
+          <summary>Avanserte parametere</summary>
+          <div class="grid2">
+            <label>Utlasting løsmasse
+              <span class="input-unit"><input id="swell-soil" type="number" value="25" min="0" max="100" step="1"><span>%</span></span>
+            </label>
+            <label>Utlasting fjell
+              <span class="input-unit"><input id="swell-rock" type="number" value="50" min="0" max="150" step="1"><span>%</span></span>
+            </label>
+            <label>Komprimeringssvinn
+              <span class="input-unit"><input id="shrinkage" type="number" value="10" min="0" max="50" step="1"><span>%</span></span>
+            </label>
+            <label>Lastebilkapasitet
+              <span class="input-unit"><input id="truck" type="number" value="15" min="1" max="60" step="0.5"><span>m³</span></span>
+            </label>
+            <label class="span2">Rutenett
+              <select id="resolution">
+                <option value="">Automatisk</option>
+                <option value="0.5">0,5 m</option>
+                <option value="1">1 m</option>
+                <option value="2">2 m</option>
+                <option value="5">5 m</option>
+                <option value="10">10 m</option>
+              </select>
+            </label>
+          </div>
+        </details>
+      </section>
+
+      <button id="btn-calc" class="btn btn-calc" disabled>Beregn masser</button>
+      <div id="status" class="status" hidden></div>
+
+      <!-- RESULTS -------------------------------------------------------- -->
+      <section id="results" class="results" hidden></section>
+
+    </div>
+
+    <footer class="panel-foot">
+      <div class="account" id="account" hidden>
+        <span class="account-email" id="account-email"></span>
+        <span class="badge" id="account-badge" hidden>superadmin</span>
+        <a href="admin.html" id="account-admin" hidden>Administrasjon</a>
+        <button type="button" id="account-signout">Logg ut</button>
+      </div>
+      Høydedata: © Kartverket (DTM 1&nbsp;m, CC BY 4.0)
+    </footer>
+  </aside>
+
+  <main class="map-wrap">
+    <div id="map"></div>
+
+    <div class="map-card" id="legend" hidden>
+      <div class="legend-head">
+        <strong>Skjæring / fylling</strong>
+        <button id="legend-close" class="icon-btn" title="Skjul">×</button>
+      </div>
+      <div class="legend-bar"></div>
+      <div class="legend-ticks">
+        <span id="legend-min">–</span><span>0 m</span><span id="legend-max">+</span>
+      </div>
+      <label class="legend-row">
+        <span>Gjennomsiktighet</span>
+        <input id="opacity" type="range" min="0" max="100" value="80">
+      </label>
+      <label class="legend-row check">
+        <input id="toggle-shade" type="checkbox"> <span>Terrengskygge</span>
+      </label>
+    </div>
+  </main>
+
+</div>
+
+<script src="vendor/leaflet.js"></script>
+<script src="vendor/leaflet.draw.js"></script>
+<script src="config.js"></script>
+<script src="auth.js"></script>
+<script src="main.js"></script>
+</body>
+</html>

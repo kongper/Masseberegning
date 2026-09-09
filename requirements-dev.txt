@@ -1,0 +1,7 @@
+# Development and CI only.
+pytest>=8.0
+httpx>=0.27          # FastAPI's TestClient transport
+
+# test_ui.py drives a real browser against a running server and a live
+# Kartverket, so it is not part of the CI run.
+# playwright>=1.40

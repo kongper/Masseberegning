@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Administrasjon – Masseberegning</title>
+<link rel="stylesheet" href="auth.css">
+</head>
+<body>
+
+<!-- Same gate as the main app. This page is a public static file on GitHub
+     Pages and useless without a superadmin token: every endpoint it calls is
+     behind require_superadmin. -->
+<div class="gate" id="gate" hidden></div>
+
+<div class="app admin">
+
+  <header class="admin-head">
+    <h1>Administrasjon</h1>
+    <div class="account" id="account" hidden>
+      <span class="account-email" id="account-email"></span>
+      <span class="badge">superadmin</span>
+      <a href="index.html">Til kartet</a>
+      <button type="button" id="account-signout">Logg ut</button>
+    </div>
+  </header>
+
+  <div id="not-admin" hidden>
+    <div class="admin-msg error">
+      Denne siden krever superadmin. Kontoen din har vanlig tilgang.
+      <a href="index.html">Gå til kartet</a>.
+    </div>
+  </div>
+
+  <div id="admin-body" hidden>
+
+    <!-- NEW INVITE ------------------------------------------------------- -->
+    <section>
+      <h2>Ny invitasjon</h2>
+      <form class="admin-form" id="invite-form">
+        <label>Merkelapp
+          <input id="inv-label" type="text" maxlength="120" placeholder="F.eks. Veidekke pilot">
+        </label>
+        <!-- Label kept to one line so every field in the row aligns; the
+             optional-ness is covered by the placeholder and the hint below. -->
+        <label>Bundet til e-post
+          <input id="inv-email" type="email" placeholder="valgfritt">
+        </label>
+        <label>Antall bruk
+          <input id="inv-uses" type="number" min="1" max="100" value="1">
+        </label>
+        <label>Gyldig i dager
+          <input id="inv-days" type="number" min="1" max="90" value="14">
+        </label>
+        <label>Rolle
+          <select id="inv-role">
+            <option value="user">Bruker</option>
+            <option value="superadmin">Superadmin</option>
+          </select>
+        </label>
+        <button type="submit" class="btn btn-primary">Opprett lenke</button>
+      </form>
+      <p class="admin-hint">En invitasjon som er bundet til en e-postadresse kan bare
+      brukes én gang. Lenken vises kun én gang – kopier den før du forlater siden.</p>
+      <div id="invite-out"></div>
+    </section>
+
+    <!-- INVITES ---------------------------------------------------------- -->
+    <section>
+      <h2>Invitasjoner</h2>
+      <div class="admin-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Merkelapp</th><th>Bundet til</th><th>Rolle</th>
+              <th class="num">Bruk</th><th>Status</th><th>Utløper</th>
+              <th>Innløst av</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="invite-rows"></tbody>
+        </table>
+      </div>
+      <div id="invite-empty" class="admin-empty" hidden>Ingen invitasjoner ennå.</div>
+    </section>
+
+    <!-- USERS ------------------------------------------------------------ -->
+    <section>
+      <h2>Brukere</h2>
+      <div class="admin-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>E-post</th><th>Rolle</th><th>Status</th>
+              <th>Invitert av</th><th>Sist aktiv</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="user-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- AUDIT ------------------------------------------------------------ -->
+    <section>
+      <h2>Hendelseslogg</h2>
+      <div class="admin-scroll">
+        <table>
+          <thead>
+            <tr><th>Tidspunkt</th><th>Hvem</th><th>Handling</th><th>Gjelder</th></tr>
+          </thead>
+          <tbody id="audit-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="auth.js"></script>
+<script src="admin.js"></script>
+</body>
+</html>

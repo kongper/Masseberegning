@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+*.tif
+*.png
+!static/vendor/images/*.png
+
+# Local configuration. .env.example is the template and is committed.
+.env
+.env.local

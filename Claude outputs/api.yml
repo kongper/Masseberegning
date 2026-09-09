@@ -1,0 +1,122 @@
+name: Test and deploy API
+
+# Two jobs: tests always, deploy only from main.
+#
+# The deploy step is written for Azure Container Apps. Swapping it for Cloud
+# Run means replacing that one step; nothing else here is Azure-specific.
+#
+# Required secrets:
+#   AZURE_CREDENTIALS   output of `az ad sp create-for-rbac --sdk-auth`
+#   ACR_NAME            container registry name (without .azurecr.io)
+# Required variables:
+#   RESOURCE_GROUP, CONTAINER_APP
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'static/**'
+      - '**.md'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: masseberegning_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/masseberegning_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # test_invites and test_auth are pytest suites against the Postgres
+      # service above. Neither makes a network request.
+      - name: Run tests
+        run: pytest -q test_invites.py test_auth.py
+
+      # test_render.py is script-style (checks run at import, non-zero exit on
+      # failure) rather than a pytest suite, so it is run as a program. It is
+      # pure numpy and Pillow, no network.
+      - name: Rendering checks
+        run: python test_render.py
+
+      # test_engine.py is also script-style, but its third section calls
+      # Kartverket for real. Kept out of the required path so a bad five
+      # minutes at hoydedata.no cannot block a deploy - but still reported.
+      - name: Volume engine checks (needs Kartverket)
+        continue-on-error: true
+        run: python test_engine.py
+
+      # test_ui.py drives a real browser against a running server, so it is
+      # left for local use.
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Build image in ACR
+        run: |
+          az acr build \
+            --registry ${{ secrets.ACR_NAME }} \
+            --image masseberegning:${{ github.sha }} \
+            --image masseberegning:latest \
+            --file Dockerfile .
+
+      - name: Deploy revision
+        # Single replica on purpose: job output (overlay PNGs, GeoTIFF, CSV)
+        # lives on the container filesystem, so a second replica would serve
+        # 404s for another replica's jobs. Move job storage to blob storage
+        # before raising max-replicas.
+        run: |
+          az containerapp update \
+            --name ${{ vars.CONTAINER_APP }} \
+            --resource-group ${{ vars.RESOURCE_GROUP }} \
+            --image ${{ secrets.ACR_NAME }}.azurecr.io/masseberegning:${{ github.sha }} \
+            --min-replicas 1 \
+            --max-replicas 1
+
+      - name: Verify the new revision answers
+        run: |
+          set -euo pipefail
+          fqdn=$(az containerapp show \
+            --name ${{ vars.CONTAINER_APP }} \
+            --resource-group ${{ vars.RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          for i in $(seq 1 20); do
+            body=$(curl -fsS "https://$fqdn/healthz" || true)
+            echo "$body"
+            case "$body" in
+              *'"status":"ok"'*) echo "Healthy."; exit 0 ;;
+            esac
+            sleep 6
+          done
+          echo "::error::/healthz did not report ok after the deploy."
+          exit 1
