@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,19 +22,64 @@ from psycopg_pool import ConnectionPool
 
 log = logging.getLogger(__name__)
 
+
+class DatabaseUnavailable(RuntimeError):
+    """The database is configured but not reachable right now."""
+
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 _pool: ConnectionPool | None = None
+
+# Why the retry state below exists: an unreachable database used to raise out
+# of the app's lifespan, which killed the process. The platform then had no
+# healthy machine, answered every request with its own bodiless 503 — no CORS
+# headers, so the browser reported it as a CORS failure — and there was no way
+# to ask the app what was wrong. A dependency being down should degrade the
+# app, not delete it.
+_url: str = ""
+_sizes: tuple[int, int] = (1, 8)
+last_error: str = ""
+_last_attempt: float = 0.0
+_RETRY_AFTER = 20.0
 
 
 # --------------------------------------------------------------------- pool
 
 
-def init_pool(database_url: str, *, min_size: int = 1, max_size: int = 8) -> ConnectionPool:
-    global _pool
+def init_pool(database_url: str, *, min_size: int = 1, max_size: int = 8,
+              required: bool = True) -> ConnectionPool | None:
+    """Open the pool. With required=False, log and return None on failure.
+
+    The caller can then start anyway and let `ensure_pool` retry in the
+    background, so a database that comes back does not need a redeploy.
+    """
+    global _pool, _url, _sizes, last_error, _last_attempt
+    _url, _sizes = database_url, (min_size, max_size)
     if _pool is not None:
         return _pool
-    _pool = ConnectionPool(
+    _last_attempt = time.monotonic()
+    try:
+        return _open_pool(database_url, min_size, max_size)
+    except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+        last_error = f"{type(exc).__name__}: {exc}"
+        log.error("Database unavailable: %s", last_error)
+        if required:
+            raise
+        return None
+
+
+def _open_pool(database_url: str, min_size: int, max_size: int) -> ConnectionPool:
+    """Open and verify a pool, publishing it only once it actually works.
+
+    The publish has to come after wait(). Assigning the global first left a
+    half-open pool behind when wait() timed out, and the consequences were
+    worse than the original outage: /healthz cheerfully reported
+    "connected": true against a database that was refusing every connection,
+    and later queries failed with "PoolClosed" instead of the real error. A
+    health endpoint that lies is worse than no health endpoint.
+    """
+    global _pool, last_error
+    candidate = ConnectionPool(
         database_url,
         min_size=min_size,
         max_size=max_size,
@@ -53,7 +99,13 @@ def init_pool(database_url: str, *, min_size: int = 1, max_size: int = 8) -> Con
         },
         open=True,
     )
-    _pool.wait(timeout=15)
+    try:
+        candidate.wait(timeout=15)
+    except BaseException:
+        candidate.close()
+        raise
+    _pool = candidate
+    last_error = ""
     log.info("Database pool ready")
     return _pool
 
@@ -65,10 +117,47 @@ def close_pool() -> None:
         _pool = None
 
 
+def ensure_pool() -> ConnectionPool | None:
+    """Return the pool, retrying a failed open at most every _RETRY_AFTER.
+
+    Rate-limited so a request storm against a down database does not turn into
+    a connection storm, and so the failure stays cheap.
+    """
+    global _last_attempt, last_error
+    if _pool is not None:
+        return _pool
+    if not _url:
+        return None
+    if time.monotonic() - _last_attempt < _RETRY_AFTER:
+        return None
+    _last_attempt = time.monotonic()
+    try:
+        log.info("Retrying the database connection")
+        return _open_pool(_url, *_sizes)
+    except Exception as exc:  # noqa: BLE001
+        last_error = f"{type(exc).__name__}: {exc}"
+        log.error("Database still unavailable: %s", last_error)
+        return None
+
+
+def available() -> bool:
+    return ensure_pool() is not None
+
+
+def status() -> dict:
+    """For /healthz and /readyz. Never raises, never blocks on a dead socket."""
+    if not _url:
+        return {"configured": False}
+    if _pool is not None:
+        return {"configured": True, "connected": True}
+    return {"configured": True, "connected": False, "error": last_error or "not connected"}
+
+
 def pool() -> ConnectionPool:
-    if _pool is None:
-        raise RuntimeError("Database pool not initialised")
-    return _pool
+    p = ensure_pool()
+    if p is None:
+        raise DatabaseUnavailable(last_error or "database not connected")
+    return p
 
 
 def run_migrations() -> None:

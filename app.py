@@ -24,7 +24,7 @@ import requests
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pyproj import Transformer
@@ -80,9 +80,23 @@ async def lifespan(app: FastAPI):
         log.warning("Configuration: %s (running anyway)", p)
 
     storage.init(settings.job_root, settings.job_ttl_minutes)
+
     if settings.database_url:
-        db.init_pool(settings.database_url)
-        db.run_migrations()
+        # Non-fatal on purpose. If this raised, the process would exit, the
+        # platform would have no healthy machine, and every request would get
+        # its bodiless 503 - which a browser reports as a CORS error, because
+        # an edge error page carries no Access-Control-Allow-Origin. The app
+        # would be both broken and unable to say why. Starting anyway means
+        # /healthz and /readyz can report the real error, and db.ensure_pool
+        # retries, so a database that comes back needs no redeploy.
+        strict = os.environ.get("DB_REQUIRED_AT_STARTUP") == "1"
+        if db.init_pool(settings.database_url, required=strict) is not None:
+            db.run_migrations()
+        else:
+            log.error("=" * 68)
+            log.error("Starting WITHOUT a database. /api/* will answer 503.")
+            log.error("Check DATABASE_URL, then curl /readyz for the error.")
+            log.error("=" * 68)
     yield
     db.close_pool()
 
@@ -336,24 +350,46 @@ def job_file(job_id: str, name: str):
 
 @app.get("/healthz")
 def healthz():
-    """Liveness. Deliberately does not touch Kartverket.
+    """Liveness only. Touches nothing outside this process.
 
-    A probe that depended on an external service would take the app down
-    whenever hoydedata.no had a bad five minutes.
+    This must stay trivial. The platform health check has a five-second
+    timeout, and it used to run a database round-trip: on a cold start - the
+    machine woken from auto-stop, the pool still dialling the database - that
+    blew the timeout, the machine was marked unhealthy, and routing stopped.
+    A liveness probe that can be dragged down by a dependency will eventually
+    take the app down over something the app could have survived.
     """
-    ok = True
-    detail: dict = {"jobs": str(storage.root()), "dem_cache": demcache.stats()}
+    detail: dict = {
+        "jobs": str(storage.root()),
+        "dem_cache": demcache.stats(),
+        "db": db.status(),          # cached state; no connection attempt
+    }
     if settings.local_single_user:
         detail["mode"] = "local_single_user"
-    if settings.database_url:
-        try:
-            with db.pool().connection() as conn:
-                conn.execute("select 1")
-            detail["db"] = "ok"
-        except Exception as exc:  # noqa: BLE001 - a probe must not raise
-            ok = False
-            detail["db"] = f"error: {exc}"
-    return {"status": "ok" if ok else "degraded", **detail}
+    return {"status": "ok", **detail}
+
+
+@app.get("/readyz")
+def readyz():
+    """Readiness: can this process actually serve requests?
+
+    Unlike /healthz this really does talk to the database, so it is the one to
+    curl when something is wrong. Deliberately NOT the platform health check -
+    a slow database here should show up as a clear error, not as a dead app.
+    """
+    if settings.local_single_user or not settings.database_url:
+        return {"status": "ready", "db": db.status()}
+    try:
+        with db.pool().connection() as conn:
+            conn.execute("select 1")
+        return {"status": "ready", "db": {"configured": True, "connected": True}}
+    except Exception as exc:  # noqa: BLE001 - a probe must not raise
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready",
+                     "db": {"configured": True, "connected": False,
+                            "error": f"{type(exc).__name__}: {exc}"}},
+        )
 
 
 # Serving the UI from the API is for local development. In production the

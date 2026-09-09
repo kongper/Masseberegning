@@ -156,6 +156,17 @@ def load_membership(principal: Principal) -> db.User | None:
 def require_member(principal: Principal = Depends(require_user)) -> db.User:
     if settings.local_single_user:
         return LOCAL_USER
+
+    # A clear 503 beats a 500 traceback, and beats the platform's bodiless 503
+    # even more: this one carries CORS headers, so the browser shows the real
+    # message instead of reporting a CORS failure.
+    if not db.available():
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Databasen er ikke tilgjengelig. Prøv igjen om litt.",
+            headers={"Retry-After": "30"},
+        )
+
     user = load_membership(principal)
     if user is None:
         raise HTTPException(
