@@ -45,41 +45,57 @@ def have_git() -> bool:
     return shutil.which("git") is not None
 
 
-def install_workflows() -> None:
-    """Move deploy/*.yml into .github/workflows/.
+def _strip_preamble(text: str) -> str:
+    """Drop the "install this at" header; it addresses the human, not Actions."""
+    lines = text.splitlines(keepends=True)
+    preamble = ("# Install this at", "# (setup.py moves it there")
+    while lines and lines[0].startswith(preamble):
+        lines.pop(0)
+    if lines and lines[0].strip() == "#":
+        lines.pop(0)
+    return "".join(lines)
 
-    They ship under deploy/ because the tool that wrote this project to disk
-    cannot write into .github/ - GitHub Actions files are protected from
-    remote writes. Nothing about them is special once they are in place.
+
+def install_workflows() -> bool:
+    """Sync deploy/*.yml into .github/workflows/. Returns True if anything changed.
+
+    The workflows ship under deploy/ because the tool that writes this project
+    to disk cannot write into .github/ — GitHub Actions files are protected
+    from remote writes.
+
+    This used to MOVE them and then delete deploy/, which produced a nasty
+    failure: a later corrected file dropped into deploy/ had no way to announce
+    that the installed copy was now stale, so a superseded workflow stayed on
+    main and failed with an error message that no longer matched any file in
+    the repo. So deploy/ is now the canonical source, kept in place and
+    gitignored, and this function re-syncs from it every run.
     """
     WORKFLOWS.mkdir(parents=True, exist_ok=True)
+    changed = False
+
     for name in ("api.yml", "pages.yml"):
         src, dst = DEPLOY / name, WORKFLOWS / name
         if not src.exists():
             if dst.exists():
-                say(f"    .github/workflows/{name} already installed")
+                say(f"    .github/workflows/{name} present (no deploy/{name} to sync from)")
             else:
                 say(f"    !! missing both deploy/{name} and .github/workflows/{name}")
             continue
-        if dst.exists() and dst.read_text(encoding="utf-8") == src.read_text(encoding="utf-8"):
-            say(f"    .github/workflows/{name} already up to date")
-            src.unlink()
-            continue
-        # Strip the "install this at" preamble; it is an instruction to the
-        # human, not to Actions.
-        lines = src.read_text(encoding="utf-8").splitlines(keepends=True)
-        preamble = ("# Install this at", "# (setup.py moves it there")
-        while lines and lines[0].startswith(preamble):
-            lines.pop(0)
-        if lines and lines[0].strip() == "#":
-            lines.pop(0)
-        dst.write_text("".join(lines), encoding="utf-8")
-        src.unlink()
-        say(f"    wrote .github/workflows/{name}")
 
-    if DEPLOY.exists() and not any(DEPLOY.iterdir()):
-        DEPLOY.rmdir()
-        say("    removed the now-empty deploy/ folder")
+        wanted = _strip_preamble(src.read_text(encoding="utf-8"))
+        if dst.exists():
+            if dst.read_text(encoding="utf-8") == wanted:
+                say(f"    .github/workflows/{name} up to date")
+                continue
+            dst.write_text(wanted, encoding="utf-8")
+            say(f"    UPDATED .github/workflows/{name} — the installed copy was out of date")
+            changed = True
+        else:
+            dst.write_text(wanted, encoding="utf-8")
+            say(f"    wrote .github/workflows/{name}")
+            changed = True
+
+    return changed
 
 
 def check_secrets_not_staged() -> list[str]:
@@ -136,8 +152,8 @@ def main() -> int:
         say("Install it from https://git-scm.com/download/win and re-run.")
         return 1
 
-    step(1, "Installing the CI workflows")
-    install_workflows()
+    step(1, "Syncing the CI workflows")
+    workflows_changed = install_workflows()
 
     leaked = check_secrets_not_staged()
     if leaked:
@@ -154,7 +170,12 @@ def main() -> int:
         say("Stopped before committing. Fix the note above and re-run.")
         return 1
 
-    say("Local setup done. Next, create the repo on GitHub and push.")
+    if workflows_changed:
+        say("A CI workflow changed. Commit and push, then re-run the failed")
+        say("workflow from the Actions tab — GitHub runs whatever is on main,")
+        say("so an updated workflow only takes effect after the push.")
+        say()
+    say("If this is the first time: create the repo on GitHub and push.")
     say()
     say("  Option A - with the GitHub CLI (gh):")
     say(f"    gh repo create {REPO} --private --source=. --remote=origin --push")

@@ -20,3 +20,8 @@ __pycache__/
 
 # Scratch folder the desktop app writes downloads and test artefacts into.
 Claude outputs/
+
+# Staging area for the CI workflows. The remote file tools cannot write into
+# .github/, so the workflows are dropped here and setup.py syncs them into
+# place. The copies under .github/workflows/ are the ones git tracks.
+deploy/
