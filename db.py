@@ -61,11 +61,33 @@ def init_pool(database_url: str, *, min_size: int = 1, max_size: int = 8,
     try:
         return _open_pool(database_url, min_size, max_size)
     except Exception as exc:  # noqa: BLE001 - reported, not swallowed
-        last_error = f"{type(exc).__name__}: {exc}"
+        last_error = _describe(exc)
         log.error("Database unavailable: %s", last_error)
         if required:
             raise
         return None
+
+
+def _describe(exc: BaseException) -> str:
+    """A DatabaseUnavailable already carries a diagnosed message; don't re-prefix it."""
+    return str(exc) if isinstance(exc, DatabaseUnavailable) else f"{type(exc).__name__}: {exc}"
+
+
+def _diagnose(database_url: str, original: BaseException) -> str:
+    """Turn a bare PoolTimeout into something that names the actual problem."""
+    import urllib.parse
+
+    parts = urllib.parse.urlsplit(database_url)
+    where = f"{parts.hostname}:{parts.port or 5432}"
+    try:
+        import psycopg
+
+        with psycopg.connect(database_url, connect_timeout=8):
+            # Connecting works now, so the pool merely lost a race.
+            return f"{type(original).__name__}: {original} (a direct connect to {where} succeeded)"
+    except Exception as exc:  # noqa: BLE001 - this IS the diagnostic
+        detail = " ".join(str(exc).split())
+        return f"{type(exc).__name__} connecting to {where}: {detail}"
 
 
 def _open_pool(database_url: str, min_size: int, max_size: int) -> ConnectionPool:
@@ -96,14 +118,25 @@ def _open_pool(database_url: str, min_size: int, max_size: int) -> ConnectionPoo
             # nothing here: every query in this app is tiny, and each request is
             # dominated by a multi-second Kartverket fetch, not by SQL parsing.
             "prepare_threshold": None,
+            # Fail an individual attempt fast. Without this a socket to an
+            # unroutable host hangs until the pool's own wait() gives up, so
+            # every diagnosis costs the full 15 seconds.
+            "connect_timeout": 8,
         },
         open=True,
     )
     try:
         candidate.wait(timeout=15)
-    except BaseException:
+    except BaseException as exc:
         candidate.close()
-        raise
+        # "PoolTimeout: pool initialization incomplete after 15 sec" says only
+        # that connecting did not finish - not why. The pool logs the real
+        # reason per attempt, but that is buried in the platform log rather
+        # than visible on /readyz. So make one direct attempt with a short
+        # timeout purely to capture a usable message: "Network is unreachable"
+        # (an IPv6-only host from an IPv4 network), "password authentication
+        # failed", "Name or service not known" all point somewhere different.
+        raise DatabaseUnavailable(_diagnose(database_url, exc)) from exc
     _pool = candidate
     last_error = ""
     log.info("Database pool ready")
@@ -135,7 +168,7 @@ def ensure_pool() -> ConnectionPool | None:
         log.info("Retrying the database connection")
         return _open_pool(_url, *_sizes)
     except Exception as exc:  # noqa: BLE001
-        last_error = f"{type(exc).__name__}: {exc}"
+        last_error = _describe(exc)
         log.error("Database still unavailable: %s", last_error)
         return None
 
