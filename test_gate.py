@@ -3,7 +3,7 @@ Browser checks for the access gate and the admin page.
 
 Script-style, like test_render.py and test_engine.py: run it as a program, not
 under pytest. It needs a server with SERVE_STATIC=1 on the port below and a
-config.js with supabaseUrl/supabaseAnonKey filled in.
+config.js with supabaseUrl/supabasePublishableKey filled in.
 
     SERVE_STATIC=1 PORT=8011 python app.py &
     python test_gate.py
@@ -29,6 +29,23 @@ TILES = ["**cache.kartverket.no**", "**opencache.statkart.no**",
 SESSION = """
   localStorage.setItem('mb.session', JSON.stringify({
     access_token: 'fake', refresh_token: 'r', expires_at: Date.now() + 3600000 }));
+"""
+
+# The test serves its own config.js rather than relying on the repo's. The
+# checked-in default has only Google enabled and no email form - correct for a
+# fresh deployment, but it would make the assertions below depend on a value
+# that changes for deployment reasons rather than behavioural ones. Here every
+# sign-in method is on, so the gate is exercised fully.
+CONFIG_JS = """
+/* supplied by test_gate.py */
+window.MB_CONFIG = {
+  apiBase: '',
+  supabaseUrl: 'https://test.supabase.co',
+  supabasePublishableKey: 'sb_publishable_test',
+  supabaseAnonKey: '',
+  providers: ['google', 'azure'],
+  allowEmailLink: true,
+};
 """
 
 MEG_STRANGER = '{"email":"stranger@internet.com","status":"no_access"}'
@@ -68,6 +85,8 @@ def page_for(browser, *, session=False, meg=None, routes=None):
     p = browser.new_page()
     for pat in TILES:
         p.route(pat, lambda route: route.abort())
+    p.route("**/config.js", lambda route, *_: route.fulfill(
+        status=200, content_type="application/javascript", body=CONFIG_JS))
     if session:
         p.add_init_script(SESSION)
     # The *_ matters: Playwright inspects the handler's arity and passes

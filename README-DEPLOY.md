@@ -67,86 +67,38 @@ exist yet. You will fix that in steps 3 and 4.
 
 ## 2. Supabase
 
-### 2a. Create the project
+This is the fiddliest part and the dashboard has been reorganised more than
+once, so it has its own guide: **[README-SUPABASE.md](README-SUPABASE.md)**.
 
-<https://supabase.com/dashboard> → **New project**.
+Work through it to the end of section 7 and come back with five values:
 
-- Region: an EU one (Stockholm or Frankfurt). Kartverket's data is open, but
-  the email addresses of invited users are personal data and belong in the EEA.
-- Save the database password somewhere — it is shown once.
+| | Value | Goes to |
+|---|---|---|
+| 1 | Project URL | GitHub variable `SUPABASE_URL` |
+| 2 | Publishable key (`sb_publishable_…`) | GitHub variable `SUPABASE_PUBLISHABLE_KEY` |
+| 3 | Session-pooler connection string | Fly secret `DATABASE_URL` |
+| 4 | JWKS URL | Fly secret `SUPABASE_JWKS_URL` |
+| 5 | Issuer | Fly secret `SUPABASE_JWT_ISSUER` |
 
-### 2b. Get the connection string
+Three things there are easy to get wrong and unpleasant to debug:
 
-**Project Settings → Database → Connection string → Session pooler.**
+- **The publishable key, not the `anon` key.** `anon` and `service_role` are
+  legacy and retired by the end of 2026. Any guide showing a long key starting
+  `eyJ` is describing the old system.
+- **The session pooler, not the direct connection.** Direct is IPv6-only on new
+  projects; the session pooler is IPv4 and behaves the same for a long-lived
+  server. The username differs between them, so you cannot just swap the host.
+- **Redirect URLs must be allow-listed before sign-in works at all**, and the
+  failure looks like a blank screen rather than an error.
 
-Take the **Session pooler** URI, not the direct connection and not the
-transaction pooler:
-
-- *Direct connection* is IPv6-only on new projects, which may not resolve from
-  Fly.
-- *Transaction pooler* (port 6543) is PgBouncer in transaction mode. The app
-  already disables psycopg's prepared statements to survive it, but session
-  mode is simply the right fit for a long-lived process holding its own pool.
-
-It looks like
-`postgresql://postgres.<ref>:<password>@aws-0-eu-north-1.pooler.supabase.com:5432/postgres`.
-Substitute your real password for `[YOUR-PASSWORD]`.
-
-### 2c. Turn on JWT signing keys
-
-**Authentication → Signing keys** → use asymmetric keys (RS256/ES256). Note the
-JWKS URL:
+**Check:** the single command below validates the project URL, the publishable
+key and the provider wiring at once, before any of our code is involved.
 
 ```
-https://<ref>.supabase.co/auth/v1/.well-known/jwks.json
+curl -s -H "apikey: sb_publishable_xxxx" https://<ref>.supabase.co/auth/v1/settings
 ```
 
-The API verifies signatures against that, so it never needs a shared secret.
-
-### 2d. Redirect URLs
-
-**Authentication → URL Configuration.** Site URL:
-
-```
-https://kongper.github.io/masseberegning/
-```
-
-Additional redirect URLs — add all three:
-
-```
-https://kongper.github.io/masseberegning/**
-http://127.0.0.1:8000/static/**
-http://localhost:8000/static/**
-```
-
-Supabase refuses any `redirect_to` not listed here. **This is the single most
-common reason a working local setup breaks in production**, so get it right
-now rather than debugging a blank screen later.
-
-### 2e. Sign-in providers — do Google first
-
-Start with **Google only**. Get the whole chain working with one provider, then
-add the others. Fewer things can be wrong at once.
-
-**Google** (**Authentication → Providers → Google**) needs an OAuth client:
-
-1. <https://console.cloud.google.com> → new project.
-2. **APIs & Services → OAuth consent screen** → External. App name, your
-   support email. Scopes: `openid`, `email`, `profile`.
-3. **Credentials → Create credentials → OAuth client ID → Web application.**
-   Authorised redirect URI — exactly this, no trailing slash:
-   ```
-   https://<ref>.supabase.co/auth/v1/callback
-   ```
-4. Paste the client ID and secret into Supabase and enable the provider.
-
-**Leave Microsoft and Email for later** (§7). Microsoft needs an Entra app
-registration, and the email link needs custom SMTP: Supabase's built-in email
-service is capped at **2 messages per hour** and is explicitly not for
-production, so it is unusable for real invitations until you point it at a real
-SMTP provider.
-
-**Check:** nothing to check yet — the API is not deployed. Move on.
+Look for `"google": true` under `external`.
 
 ---
 
@@ -174,7 +126,7 @@ the Supabase project ref. Everything else is already in `fly.toml` under
 
 ```
 fly secrets set \
-  DATABASE_URL="postgresql://postgres.<ref>:<password>@aws-0-eu-north-1.pooler.supabase.com:5432/postgres" \
+  DATABASE_URL="postgresql://postgres.<ref>:<password>@aws-1-eu-north-1.pooler.supabase.com:5432/postgres" \
   SUPABASE_JWKS_URL="https://<ref>.supabase.co/auth/v1/.well-known/jwks.json" \
   SUPABASE_JWT_ISSUER="https://<ref>.supabase.co/auth/v1"
 ```
@@ -230,7 +182,7 @@ secret**, named `FLY_API_TOKEN`.
 |---|---|
 | `API_BASE` | `https://masseberegning-api.fly.dev` |
 | `SUPABASE_URL` | `https://<ref>.supabase.co` |
-| `SUPABASE_ANON_KEY` | the anon / publishable key (Project Settings → API) |
+| `SUPABASE_PUBLISHABLE_KEY` | the `sb_publishable_…` key (Project Settings → API Keys) |
 
 The workflow fails loudly if any is unset, rather than publishing a site whose
 sign-in silently does nothing.
@@ -296,33 +248,20 @@ appear in **Hendelseslogg**.
 
 ## 7. Adding the other sign-in methods
 
-Once the above works end to end.
+Once the above works end to end. Both are covered in
+[README-SUPABASE.md](README-SUPABASE.md) §9 and §10:
 
-### Microsoft
+- **Microsoft** needs an Entra app registration. Note the client-secret expiry
+  in a calendar — when it lapses, Microsoft sign-in stops with no warning. And
+  add the `xms_edov` optional claim: it tells Supabase whether the email Azure
+  returned is verified, which matters because email-bound invitations are
+  checked against exactly that address.
+- **The email link** needs custom SMTP first. Supabase's built-in service
+  allows 2 messages per hour and is not for production.
 
-<https://entra.microsoft.com> → **App registrations → New registration**.
-
-- Redirect URI, platform *Web*: `https://<ref>.supabase.co/auth/v1/callback`
-- Supported account types: *Accounts in any organizational directory and
-  personal Microsoft accounts* if you want to invite people outside Prosit;
-  single-tenant if not.
-- **Certificates & secrets → New client secret.**
-
-Paste the client ID and secret into **Supabase → Authentication → Providers →
-Azure**. For the tenant URL, `https://login.microsoftonline.com/common/v2.0`
-accepts any Microsoft account; use your tenant ID to restrict it.
-
-### Email link
-
-Needs custom SMTP first — the built-in service's 2 messages per hour will not
-carry real invitations. **Supabase → Project Settings → Authentication → SMTP
-Settings**, pointed at Resend, Postmark, SendGrid or similar. Then enable the
-Email provider with magic links.
-
-Both providers appear automatically: `config.js` already lists
-`['google', 'azure']`, and the email form is controlled by `allowEmailLink`.
-
----
+Then set the repository variables `PROVIDERS` (e.g. `'google','azure'`) and
+`ALLOW_EMAIL_LINK`, and re-run the Pages workflow. Only list a provider you
+have actually enabled, or its button will fail on click.
 
 ## 8. Things that will bite you
 
@@ -400,7 +339,7 @@ export SERVE_STATIC=1
 python app.py
 ```
 
-Fill in `supabaseUrl` and `supabaseAnonKey` in `static/config.js` — and note
+Fill in `supabaseUrl` and `supabasePublishableKey` in `static/config.js` — and note
 that `config.js` is overwritten by the Pages workflow on deploy, so a local
 edit never reaches production.
 

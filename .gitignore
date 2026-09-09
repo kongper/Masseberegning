@@ -1,8 +1,17 @@
 .venv/
 __pycache__/
 *.pyc
+
+# Rendered output and test artefacts. render.py writes GeoTIFFs and PNGs, and
+# test_ui.py leaves a screenshot behind.
 *.tif
 *.png
+
+# ...but these PNGs are source, not output. Without these negations the blanket
+# rule above silently drops every brand icon and the vendored Leaflet sprites,
+# and the published site 404s on its own favicon.
+!static/*.png
+!static/brand/*.png
 !static/vendor/images/*.png
 
 # Local configuration. .env.example is the template and is committed.

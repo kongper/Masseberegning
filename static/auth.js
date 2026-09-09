@@ -9,8 +9,8 @@
  * endpoints. If you later want more of Supabase than auth, swap this for the
  * real SDK — the surface used by the rest of the app is just MB.api / MB.url.
  *
- * Everything the browser holds here is public: the anon key is meant to be
- * readable. The access token is a bearer credential and lives in localStorage,
+ * Everything the browser holds here is public: the publishable key is meant to
+ * be readable. The access token is a bearer credential and lives in localStorage,
  * which is the standard tradeoff for a static frontend with no server of its
  * own to set a cookie.
  */
@@ -22,6 +22,12 @@
   const API = (CFG.apiBase || '').replace(/\/$/, '');
   const SB = (CFG.supabaseUrl || '').replace(/\/$/, '');
   const AUTH = SB + '/auth/v1';
+
+  /* Supabase's current publishable key ("sb_publishable_...") or the legacy
+   * anon JWT. Both go in the `apikey` header - publishable keys are not JWTs,
+   * so they must never be sent as `Authorization: Bearer`. anon/service_role
+   * are being retired by the end of 2026. */
+  const SB_KEY = CFG.supabasePublishableKey || CFG.supabaseAnonKey || '';
   const STORE_KEY = 'mb.session';
   const INVITE_KEY = 'mb.invite';
 
@@ -47,7 +53,7 @@
 
   function sbHeaders(extra) {
     return Object.assign({
-      'apikey': CFG.supabaseAnonKey || '',
+      'apikey': SB_KEY,
       'Content-Type': 'application/json',
     }, extra || {});
   }
@@ -279,7 +285,7 @@
 
     return `
       <div class="gate-card">
-        <h1>Masseberegning</h1>
+        <img class="gate-mark" src="brand/mark.svg" width="44" height="44" alt="">\n        <h1>Masseberegning</h1>
         ${invited
           ? `<p class="gate-lead">Du er invitert. Logg inn for å ta i bruk invitasjonen.</p>`
           : `<p class="gate-lead">Skjæring og fylling beregnet på Kartverkets
@@ -294,7 +300,7 @@
   function noAccessScreen(email) {
     return `
       <div class="gate-card">
-        <h1>Ingen tilgang</h1>
+        <img class="gate-mark" src="brand/mark.svg" width="44" height="44" alt="">\n        <h1>Ingen tilgang</h1>
         <p class="gate-lead">Du er logget inn som <strong>${escapeHtml(email)}</strong>,
         men denne kontoen har ikke tilgang til Masseberegning.</p>
         <p class="gate-lead">Tilgang gis med en invitasjonslenke. Har du fått en lenke,
@@ -309,7 +315,7 @@
   function checkEmailScreen(email) {
     return `
       <div class="gate-card">
-        <h1>Sjekk e-posten</h1>
+        <img class="gate-mark" src="brand/mark.svg" width="44" height="44" alt="">\n        <h1>Sjekk e-posten</h1>
         <p class="gate-lead">Vi har sendt en innloggingslenke til
         <strong>${escapeHtml(email)}</strong>. Åpne lenken i denne nettleseren.</p>
         <div id="gate-msg" class="gate-msg" hidden></div>
@@ -374,7 +380,7 @@
      * in. Probing costs one unauthenticated request and only happens when
      * supabaseUrl is empty - the Pages workflow always fills it, so a
      * published site never takes this path. */
-    if (!SB || !CFG.supabaseAnonKey) {
+    if (!SB || !SB_KEY) {
       let local = null;
       try {
         const r = await fetch(url('/api/meg'));
@@ -391,7 +397,7 @@
 
       showGate(`<div class="gate-card"><h1>Ikke konfigurert</h1>
         <p class="gate-lead">Innlogging er ikke satt opp: <code>supabaseUrl</code> og
-        <code>supabaseAnonKey</code> mangler i <code>config.js</code>.</p>
+        <code>supabasePublishableKey</code> mangler i <code>config.js</code>.</p>
         <p class="gate-lead">Kjører du lokalt uten database, start med
         <code>LOCAL_SINGLE_USER=1</code> (se README-DEPLOY.md).</p></div>`);
       return;
