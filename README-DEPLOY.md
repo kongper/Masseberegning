@@ -7,7 +7,7 @@ mistake surfaces at the step that caused it rather than three steps later.
 
 | | |
 |---|---|
-| UI | `https://kongper.github.io/masseberegning/` |
+| UI | `https://kongper.github.io/Masseberegning/` |
 | API | `https://masseberegning-api.fly.dev` |
 | Repo | `https://github.com/kongper/masseberegning` (private) |
 | Database + sign-in | Supabase (EU region) |
@@ -124,9 +124,25 @@ Then set the three secrets — the values that either carry a password or reveal
 the Supabase project ref. Everything else is already in `fly.toml` under
 `[env]`, where it is version-controlled and visible.
 
+> **Copy this string from the dashboard's Connect button rather than from
+> here.** Three parts of it are specific to your project and none of them can
+> be guessed:
+>
+> - the **region** in the hostname (`aws-1-eu-west-1`, `aws-1-eu-north-1`, …) —
+>   it is wherever the project was created, and a wrong region still resolves
+>   and still answers, so the failure looks like a credentials problem
+> - the **project ref** in the username, which is `postgres.` + the ref;
+>   leaving the placeholder gives
+>   `FATAL: (ENOTFOUND) tenant/user postgres.<ref> not found`, which also reads
+>   like a permissions problem and is not one
+> - the **password**, percent-encoded if it contains `@ / : #`
+>
+> The Connect dialog fills in the first two for you and leaves only the
+> password to replace.
+
 ```
 fly secrets set \
-  DATABASE_URL="postgresql://postgres.<ref>:<password>@aws-1-eu-north-1.pooler.supabase.com:5432/postgres" \
+  DATABASE_URL="postgresql://postgres.<ref>:<password>@aws-N-YOUR-REGION.pooler.supabase.com:5432/postgres" \
   SUPABASE_JWKS_URL="https://<ref>.supabase.co/auth/v1/.well-known/jwks.json" \
   SUPABASE_JWT_ISSUER="https://<ref>.supabase.co/auth/v1"
 ```
@@ -192,7 +208,7 @@ Then **Settings → Pages → Source: GitHub Actions**.
 Re-run both workflows: **Actions →** pick each →
 **Re-run all jobs**.
 
-**Check:** open <https://kongper.github.io/masseberegning/>. You should get the
+**Check:** open <https://kongper.github.io/Masseberegning/>. You should get the
 sign-in card with a "Fortsett med Google" button. If you instead see **"Ikke
 konfigurert"**, the three variables did not reach `config.js` — check the Pages
 workflow log.

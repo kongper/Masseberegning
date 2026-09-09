@@ -24,7 +24,7 @@ will paste them into Fly and GitHub in §8.
 |---|---|---|---|
 | 1 | Project URL | `https://abcdefghijkl.supabase.co` | GitHub variable `SUPABASE_URL` |
 | 2 | Publishable key | `sb_publishable_xxxxxxxx` | GitHub variable `SUPABASE_PUBLISHABLE_KEY` |
-| 3 | Connection string | `postgresql://postgres.abcdefghijkl:PASSWORD@aws-1-eu-north-1.pooler.supabase.com:5432/postgres` | Fly secret `DATABASE_URL` |
+| 3 | Connection string | `postgresql://postgres.abcdefghijkl:PASSWORD@aws-N-YOUR-REGION.pooler.supabase.com:5432/postgres` | Fly secret `DATABASE_URL` |
 | 4 | JWKS URL | `https://abcdefghijkl.supabase.co/auth/v1/.well-known/jwks.json` | Fly secret `SUPABASE_JWKS_URL` |
 | 5 | Issuer | `https://abcdefghijkl.supabase.co/auth/v1` | Fly secret `SUPABASE_JWT_ISSUER` |
 
@@ -159,7 +159,7 @@ wrongly.
 **Check it**, if you have `psql`:
 
 ```
-psql "postgresql://postgres.<ref>:<password>@aws-1-eu-north-1.pooler.supabase.com:5432/postgres" -c "select now()"
+psql "postgresql://postgres.<ref>:<password>@aws-N-YOUR-REGION.pooler.supabase.com:5432/postgres" -c "select now()"
 ```
 
 No `psql`? Skip it — the API's `/healthz` reports `"db":"ok"` and is a better
@@ -178,13 +178,13 @@ symptom is unhelpful — a redirect to an error page, or a blank screen.
 **Site URL:**
 
 ```
-https://kongper.github.io/masseberegning/
+https://kongper.github.io/Masseberegning/
 ```
 
 **Redirect URLs** — add all three:
 
 ```
-https://kongper.github.io/masseberegning/**
+https://kongper.github.io/Masseberegning/**
 http://localhost:8000/static/**
 http://127.0.0.1:8000/static/**
 ```
@@ -278,9 +278,25 @@ at all.
 
 **Fly secrets** — carry a password or reveal the project ref:
 
+> **Copy this string from the dashboard's Connect button rather than from
+> here.** Three parts of it are specific to your project and none of them can
+> be guessed:
+>
+> - the **region** in the hostname (`aws-1-eu-west-1`, `aws-1-eu-north-1`, …) —
+>   it is wherever the project was created, and a wrong region still resolves
+>   and still answers, so the failure looks like a credentials problem
+> - the **project ref** in the username, which is `postgres.` + the ref;
+>   leaving the placeholder gives
+>   `FATAL: (ENOTFOUND) tenant/user postgres.<ref> not found`, which also reads
+>   like a permissions problem and is not one
+> - the **password**, percent-encoded if it contains `@ / : #`
+>
+> The Connect dialog fills in the first two for you and leaves only the
+> password to replace.
+
 ```
 fly secrets set \
-  DATABASE_URL="postgresql://postgres.<ref>:<password>@aws-1-eu-north-1.pooler.supabase.com:5432/postgres" \
+  DATABASE_URL="postgresql://postgres.<ref>:<password>@aws-N-YOUR-REGION.pooler.supabase.com:5432/postgres" \
   SUPABASE_JWKS_URL="https://<ref>.supabase.co/auth/v1/.well-known/jwks.json" \
   SUPABASE_JWT_ISSUER="https://<ref>.supabase.co/auth/v1"
 ```

@@ -30,8 +30,13 @@ primary_region = 'arn'          # Stockholm: closest Fly region to Norway, insid
   # served from a subpath, but the CORS origin is still the bare host.
   ALLOWED_ORIGINS = 'https://kongper.github.io'
 
-  # Where invitation links point. This one DOES include the subpath.
-  FRONTEND_URL = 'https://kongper.github.io/masseberegning/'
+  # Where invitation links point. This one DOES include the subpath, and the
+  # subpath is CASE-SENSITIVE: it is the repository name exactly as GitHub
+  # spells it. Getting the case wrong produces invitation links that 404 on
+  # GitHub's own "There isn't a GitHub Pages site here" page, while the API
+  # and sign-in keep working - ALLOWED_ORIGINS below is origin-only, so it is
+  # unaffected by path case.
+  FRONTEND_URL = 'https://kongper.github.io/Masseberegning/'
 
   # Granted superadmin on sign-in, no invite needed. Keep it set: it is the way
   # back in if the last superadmin loses their account.
