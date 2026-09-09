@@ -1,0 +1,120 @@
+# Two jobs: tests always, deploy to Fly.io only from main.
+#
+# Required repository secret:
+#   FLY_API_TOKEN   from `fly tokens create deploy -x 999999h`
+#                   Paste the whole value including the "FlyV1" prefix.
+
+name: Test and deploy API
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'static/**'
+      - '**.md'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: masseberegning_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/masseberegning_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # Pytest suites covering invitations and the authorization wall. Neither
+      # makes a network request.
+      - name: Access control tests
+        run: pytest -q test_invites.py test_auth.py
+
+      # Script-style (checks run at import, non-zero exit on failure) rather
+      # than a pytest suite, so run it as a program. Pure numpy and Pillow.
+      - name: Rendering checks
+        run: python test_render.py
+
+      # Also script-style, but its third section calls Kartverket for real.
+      # Kept off the required path so a bad five minutes at hoydedata.no cannot
+      # block a deploy - but still reported.
+      - name: Volume engine checks (needs Kartverket)
+        continue-on-error: true
+        run: python test_engine.py
+
+      # test_gate.py needs a running server and a browser; test_ui.py needs
+      # both plus live Kartverket. Both are left for local use.
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # --remote-only builds the image on Fly's builders, so the runner does
+      # not need Docker or the rasterio wheels.
+      - name: Deploy
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      # Job output lives on the machine's filesystem, so a second machine would
+      # serve 404s for the first one's jobs. Fail the deploy loudly rather than
+      # leave a silently broken download link.
+      - name: Assert exactly one machine
+        run: |
+          set -euo pipefail
+          n=$(flyctl machines list --json | python3 -c \
+            'import json,sys; print(sum(1 for m in json.load(sys.stdin) if m.get("config",{}).get("metadata",{}).get("fly_process_group","app")=="app"))')
+          echo "app machines: $n"
+          if [ "$n" -ne 1 ]; then
+            echo "::error::Expected exactly 1 app machine, found $n. Job downloads break with more than one. Run 'fly scale count 1'."
+            exit 1
+          fi
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Verify /healthz
+        run: |
+          set -euo pipefail
+          host=$(flyctl status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Hostname"])')
+          echo "checking https://$host/healthz"
+          for i in $(seq 1 20); do
+            body=$(curl -fsS "https://$host/healthz" || true)
+            echo "$body"
+            case "$body" in
+              *'"status":"ok"'*) echo "Healthy."; exit 0 ;;
+            esac
+            sleep 6
+          done
+          echo "::error::/healthz did not report ok after the deploy."
+          exit 1
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

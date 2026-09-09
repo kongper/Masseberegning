@@ -8,3 +8,6 @@ __pycache__/
 # Local configuration. .env.example is the template and is committed.
 .env
 .env.local
+
+# Scratch folder the desktop app writes downloads and test artefacts into.
+Claude outputs/

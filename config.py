@@ -95,6 +95,12 @@ class Settings:
     calc_per_day: int = _int("CALC_PER_DAY", 200)
     redeem_per_hour: int = _int("REDEEM_PER_HOUR", 20)
 
+    # --- caching
+    # Memory the DEM cache may hold. It competes with the working set of a
+    # calculation (a 16 Mpx DEM is 64 MB at float32, and the difference array
+    # is 128 MB at float64), so keep this well under the machine's RAM.
+    dem_cache_mb: int = _int("DEM_CACHE_MB", 256)
+
     # --- jobs
     job_ttl_minutes: int = _int("JOB_TTL_MINUTES", 120)
     job_root: str = os.environ.get("JOB_ROOT", "")

@@ -37,7 +37,20 @@ def init_pool(database_url: str, *, min_size: int = 1, max_size: int = 8) -> Con
         database_url,
         min_size=min_size,
         max_size=max_size,
-        kwargs={"row_factory": dict_row},
+        kwargs={
+            "row_factory": dict_row,
+            # psycopg3 starts using server-side prepared statements after a
+            # query has run a few times. Behind a transaction-mode pooler
+            # (Supabase's port 6543, PgBouncer) a later execution can land on a
+            # different backend session and fail with "prepared statement
+            # already exists" or "does not exist" - intermittently, under load,
+            # which is the worst way to find out.
+            #
+            # Turning them off removes that whole class of failure and costs
+            # nothing here: every query in this app is tiny, and each request is
+            # dominated by a multi-second Kartverket fetch, not by SQL parsing.
+            "prepare_threshold": None,
+        },
         open=True,
     )
     _pool.wait(timeout=15)

@@ -18,11 +18,16 @@ from collections import OrderedDict
 from threading import Lock
 
 import kartverket
+from config import settings
 from kartverket import Dem
 
 log = logging.getLogger(__name__)
 
-MAX_BYTES = 256 * 1024 * 1024
+# Configurable because it competes directly with the working set. A single
+# calculation can hold a 64 MB float32 DEM plus a 128 MB float64 difference
+# array, so on a small machine an over-generous cache is what pushes the
+# process into the OOM killer. See DEM_CACHE_MB in .env.example.
+MAX_BYTES = settings.dem_cache_mb * 1024 * 1024
 TTL_SECONDS = 900
 
 _entries: "OrderedDict[tuple, tuple[float, Dem]]" = OrderedDict()

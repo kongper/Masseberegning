@@ -1,0 +1,83 @@
+# Fly.io configuration for the Masseberegning API.
+#
+# The frontend is NOT here - it lives on GitHub Pages. This app serves
+# /api/* and /healthz only.
+#
+# ONE MACHINE ONLY. Job output (overlay PNGs, GeoTIFF, CSV) is written to this
+# machine's filesystem and read back through /api/jobb/{id}/{name}, so a second
+# machine would serve 404s for the first machine's jobs. `fly launch` may create
+# two machines for high availability; run `fly scale count 1` after the first
+# deploy and check with `fly status`. Raising this needs blob storage first -
+# storage.py is the seam for that.
+
+app = 'masseberegning-api'
+primary_region = 'arn'          # Stockholm: closest Fly region to Norway, inside the EEA
+
+[build]
+  dockerfile = 'Dockerfile'
+
+# Non-secret configuration lives here so it is version-controlled and visible.
+# Anything carrying the Supabase project ref or a password is a secret instead:
+#   fly secrets set DATABASE_URL=... SUPABASE_JWKS_URL=... SUPABASE_JWT_ISSUER=...
+[env]
+  HOST = '0.0.0.0'
+  PORT = '8000'
+
+  # The UI is on GitHub Pages; this process must not serve a second copy of it.
+  SERVE_STATIC = '0'
+
+  # Origin only - no path, no trailing slash. A GitHub Pages project site is
+  # served from a subpath, but the CORS origin is still the bare host.
+  ALLOWED_ORIGINS = 'https://kongper.github.io'
+
+  # Where invitation links point. This one DOES include the subpath.
+  FRONTEND_URL = 'https://kongper.github.io/masseberegning/'
+
+  # Granted superadmin on sign-in, no invite needed. Keep it set: it is the way
+  # back in if the last superadmin loses their account.
+  SUPERADMIN_EMAILS = 'per@prosit.no'
+
+  SUPABASE_JWT_AUDIENCE = 'authenticated'
+
+  # Well under the 2 GB below, because the cache competes with the working set
+  # of a calculation rather than sharing it.
+  DEM_CACHE_MB = '96'
+
+  JOB_ROOT = '/var/lib/masseberegning/jobs'
+  JOB_TTL_MINUTES = '120'
+
+  MAX_AREA_M2 = '10000000'       # 10 km2
+  CALC_PER_MINUTE = '6'
+  CALC_PER_DAY = '200'
+  INVITE_DEFAULT_DAYS = '14'
+  INVITE_MAX_DAYS = '90'
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Stops the machine when idle and starts it again on the next request. A cold
+  # start re-imports rasterio and pyproj, so the first request after an idle
+  # period takes a few seconds. Set min_machines_running = 1 to trade a little
+  # cost for always-warm.
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[http_service.checks]]
+  # /healthz deliberately does not touch Kartverket, so a bad five minutes at
+  # hoydedata.no cannot take the app down. It does check the database.
+  grace_period = '20s'
+  interval = '30s'
+  method = 'GET'
+  path = '/healthz'
+  timeout = '5s'
+
+[[vm]]
+  # 2 GB is not generous here: one calculation at the 16 Mpx ceiling holds a
+  # 64 MB float32 DEM and a 128 MB float64 difference array at the same time,
+  # on top of the DEM cache. Dropping to 1 GB risks the OOM killer on large
+  # polygons; lower DEM_CACHE_MB first if you want to try.
+  memory = '2gb'
+  cpu_kind = 'shared'
+  cpus = 1
