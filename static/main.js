@@ -24,6 +24,12 @@ function vol(v) {
 }
 
 const $ = (id) => document.getElementById(id);
+const esc = (s) => MB.escapeHtml(s == null ? '' : String(s));
+
+const dtf = new Intl.DateTimeFormat('nb-NO', {
+  day: '2-digit', month: '2-digit', year: 'numeric',
+});
+const fmtDate = (iso) => (iso ? dtf.format(new Date(iso)) : '');
 
 /* ------------------------------------------------------------------ map */
 
@@ -68,7 +74,10 @@ let pickingLevel = false;
 
 /* --------------------------------------------------------------- state */
 
-const state = { polygon: null, result: null };
+/* `place` is the last place name or coordinate the user navigated to; it only
+ * exists to suggest a name when saving. `me` is the signed-in user, needed
+ * because the save block is pointless in local single-user mode. */
+const state = { polygon: null, result: null, place: '', me: null, savedName: '' };
 
 function setPolygon(latlngs) {
   drawnItems.clearLayers();
@@ -91,6 +100,9 @@ function clearAll() {
   drawnItems.clearLayers();
   state.polygon = null;
   state.result = null;
+  // Otherwise the next save would suggest the name of the calculation the
+  // user just cleared away.
+  state.savedName = '';
   if (cutfillLayer) { map.removeLayer(cutfillLayer); cutfillLayer = null; }
   if (hillshadeLayer) { map.removeLayer(hillshadeLayer); hillshadeLayer = null; }
   $('btn-calc').disabled = true;
@@ -162,7 +174,8 @@ function parseCoords(text) {
   return null;
 }
 
-function jumpTo(lat, lon, zoom = 16) {
+function jumpTo(lat, lon, zoom = 16, name = '') {
+  state.place = name || `${fmt(lat, 4)}, ${fmt(lon, 4)}`;
   map.setView([lat, lon], zoom);
   L.circleMarker([lat, lon], { radius: 6, color: '#0f766e', weight: 2, fillOpacity: .6 })
     .addTo(map).bindTooltip(`${fmt(lat, 5)}, ${fmt(lon, 5)}`).openTooltip();
@@ -197,7 +210,7 @@ $('search').addEventListener('input', (e) => {
         b.type = 'button';
         b.innerHTML = `<span class="sr-name">${t.navn}</span>
           <span class="sr-meta">${t.type}${t.kommune ? ' · ' + t.kommune : ''}${t.fylke ? ', ' + t.fylke : ''}</span>`;
-        b.onclick = () => jumpTo(t.lat, t.lon);
+        b.onclick = () => jumpTo(t.lat, t.lon, 16, t.navn);
         box.appendChild(b);
       });
       box.hidden = false;
@@ -255,14 +268,13 @@ function status(msg, kind = 'info') {
 
 /* ---------------------------------------------------------- calculate */
 
-$('btn-calc').addEventListener('click', async () => {
-  if (!state.polygon) return;
-
-  const ring = state.polygon.getLatLngs()[0].map(p => [p.lng, p.lat]);
+/* The parameter half of a calculation, in the shape the API expects. Saving
+ * stores exactly this (minus the polygon), so read and write go through one
+ * pair of functions - a field added to one and forgotten in the other is the
+ * obvious way for a restored calculation to come back subtly different. */
+function readParams() {
   const mode = document.querySelector('input[name=mode]:checked').value;
-
-  const body = {
-    polygon: ring,
+  return {
     mode,
     fixed_level: mode === 'fast' ? Number($('fixed-level').value) : null,
     soil_depth: Number($('soil-depth').value),
@@ -272,6 +284,45 @@ $('btn-calc').addEventListener('click', async () => {
     truck_capacity: Number($('truck').value),
     resolution: $('resolution').value ? Number($('resolution').value) : null,
   };
+}
+
+/* Missing keys keep the form's current value: an old saved row from before a
+ * parameter existed should restore what it did specify, not reset the rest. */
+function applyParams(p) {
+  p = p || {};
+  const pct = (v) => String(Math.round(v * 100));
+
+  if (p.mode) {
+    const radio = document.querySelector(`input[name=mode][value="${p.mode}"]`);
+    if (radio) radio.checked = true;
+  }
+  // The radios' own change handler does not fire on a scripted `checked`.
+  $('fixed-opts').hidden =
+    document.querySelector('input[name=mode]:checked').value !== 'fast';
+
+  if (p.fixed_level != null) $('fixed-level').value = p.fixed_level;
+  if (p.soil_depth != null) {
+    $('soil-depth').value = p.soil_depth;
+    $('soil-out').textContent = fmt(Number(p.soil_depth), 1) + ' m';
+  }
+  if (p.swell_soil != null) $('swell-soil').value = pct(p.swell_soil);
+  if (p.swell_rock != null) $('swell-rock').value = pct(p.swell_rock);
+  if (p.shrinkage != null) $('shrinkage').value = pct(p.shrinkage);
+  if (p.truck_capacity != null) $('truck').value = p.truck_capacity;
+  if ('resolution' in p) {
+    // '' is the "Automatisk" option; a value with no matching option would
+    // silently blank the select, so fall back to automatic.
+    const want = p.resolution == null ? '' : String(p.resolution);
+    const has = [...$('resolution').options].some(o => o.value === want);
+    $('resolution').value = has ? want : '';
+  }
+}
+
+async function runCalculation() {
+  if (!state.polygon) return;
+
+  const ring = state.polygon.getLatLngs()[0].map(p => [p.lng, p.lat]);
+  const body = Object.assign({ polygon: ring }, readParams());
 
   $('btn-calc').disabled = true;
   $('btn-calc').textContent = 'Beregner …';
@@ -294,7 +345,9 @@ $('btn-calc').addEventListener('click', async () => {
     $('btn-calc').disabled = false;
     $('btn-calc').textContent = 'Beregn masser';
   }
-});
+}
+
+$('btn-calc').addEventListener('click', runCalculation);
 
 /* ------------------------------------------------------------ results */
 
@@ -415,7 +468,11 @@ function renderResult(d) {
         <a href="${MB.url(d.downloads.csv)}" download>Resultat (CSV)</a>
         <a href="${MB.url(d.downloads.geotiff)}" download>Dybdekart (GeoTIFF)</a>
       </div>
+      <p class="hint">Nedlastingene er midlertidige filer og forsvinner etter en stund.
+      Lagrer du beregningen, lages de på nytt når du åpner den igjen.</p>
     </div>
+
+    ${saveBlock()}
 
     <div class="caveat">
       <strong>Forbehold.</strong> Beregningen bygger på Kartverkets terrengmodell og gir
@@ -427,7 +484,238 @@ function renderResult(d) {
     </div>
   `;
   $('results').hidden = false;
+  wireSaveBlock();
   $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* ---------------------------------------------------- save a calculation */
+
+/* What goes in the database: the polygon and the parameters, so the result can
+ * be produced again, plus these figures so the list can be rendered without
+ * re-running everything. Deliberately not the full result - the overlay and
+ * the downloads are temporary job files, and the terrain model itself is
+ * updated by Kartverket, so a stored answer would slowly become a lie. */
+function summaryOf(d) {
+  return {
+    level: d.level,
+    area_m2: d.area_m2,
+    cut_bank_m3: d.cut.total_bank_m3,
+    fill_void_m3: d.fill.void_m3,
+    net_bank_m3: d.balance.net_bank_m3,
+    resolution_m: d.resolution_m,
+    coverage: d.coverage,
+    mode: d.mode,
+  };
+}
+
+function suggestName() {
+  if (state.savedName) return state.savedName;
+  const where = state.place || 'Beregning';
+  return `${where} ${fmtDate(new Date().toISOString())}`;
+}
+
+function saveBlock() {
+  // No accounts in local single-user mode, so nothing to own a saved row.
+  if (!state.me || state.me.local_single_user) return '';
+  return `
+    <div class="res-block">
+      <h3>Lagre</h3>
+      <div class="save-row">
+        <input id="save-name" type="text" maxlength="120" placeholder="Navn"
+               value="${esc(suggestName())}">
+        <button type="button" class="btn" id="btn-save">Lagre beregning</button>
+      </div>
+      <p class="hint" id="save-msg" hidden></p>
+    </div>`;
+}
+
+function wireSaveBlock() {
+  const btn = $('btn-save');
+  if (!btn) return;
+  const msg = $('save-msg');
+
+  function say(text, kind) {
+    msg.hidden = false;
+    msg.className = kind === 'error' ? 'status error' : 'hint';
+    msg.textContent = text;
+  }
+
+  btn.addEventListener('click', async () => {
+    const name = $('save-name').value.trim();
+    if (!name) { say('Gi beregningen et navn først.', 'error'); return; }
+    if (!state.result || !state.polygon) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Lagrer …';
+    try {
+      const row = await MB.apiJson('/api/beregninger', {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          polygon: state.polygon.getLatLngs()[0].map(p => [p.lng, p.lat]),
+          params: readParams(),
+          summary: summaryOf(state.result),
+        }),
+      });
+      state.savedName = row.name;
+      say('Lagret under «Mine beregninger».');
+      btn.textContent = 'Lagret';
+      await loadSaved();
+    } catch (err) {
+      say(err.message, 'error');
+      btn.disabled = false;
+      btn.textContent = 'Lagre beregning';
+    }
+  });
+}
+
+/* ------------------------------------------------------ mine beregninger */
+
+let savedLoaded = false;
+
+function savedItem(c) {
+  const s = c.summary || {};
+  const net = s.net_bank_m3;
+  const balance = Math.abs(net) < 0.5
+    ? 'i balanse'
+    : (net > 0 ? 'overskudd ' : 'underskudd ') + vol(Math.abs(net)) + ' m³';
+  return `
+    <div class="saved-item" data-id="${esc(c.id)}">
+      <div class="saved-main">
+        <span class="saved-name">${esc(c.name)}</span>
+        <span class="saved-meta">${fmt((s.area_m2 || 0) / 1000, 1)} daa ·
+          ${balance} · ${fmtDate(c.created_at)}</span>
+      </div>
+      <div class="saved-actions">
+        <button type="button" class="btn btn-small" data-act="open">Åpne</button>
+        <button type="button" class="btn btn-small btn-ghost" data-act="rename">Navn</button>
+        <button type="button" class="btn btn-small btn-ghost" data-act="del">Slett</button>
+      </div>
+    </div>`;
+}
+
+async function loadSaved() {
+  const box = $('saved-list');
+  let data;
+  try {
+    data = await MB.apiJson('/api/beregninger');
+  } catch (err) {
+    box.innerHTML = `<p class="hint">${esc(err.message)}</p>`;
+    return;
+  }
+  savedLoaded = true;
+
+  const rows = data.beregninger || [];
+  $('saved-count').textContent = rows.length ? `(${rows.length})` : '';
+  box.innerHTML = rows.length
+    ? rows.map(savedItem).join('')
+    : '<p class="hint">Ingen lagrede beregninger ennå. Beregn en flate, ' +
+      'og lagre den nederst i resultatet.</p>';
+}
+
+function savedBusy(item, busy) {
+  item.querySelectorAll('button').forEach(b => { b.disabled = busy; });
+}
+
+/* One delegated listener: the list is re-rendered after every change, and
+ * re-binding per row on each render is how stale handlers accumulate. */
+async function onSavedClick(ev) {
+  const btn = ev.target.closest('button[data-act]');
+  if (!btn) return;
+  const item = btn.closest('.saved-item');
+  const id = item.dataset.id;
+
+  if (btn.dataset.act === 'open') {
+    savedBusy(item, true);
+    btn.textContent = 'Åpner …';
+    try {
+      const c = await MB.apiJson('/api/beregninger/' + id);
+      // Stored as [lon, lat] - the order /api/beregn takes. Leaflet wants the
+      // other one.
+      setPolygon(c.polygon.map(p => [p[1], p[0]]));
+      applyParams(c.params);
+      state.savedName = c.name;
+      state.place = c.name;
+      $('saved').open = false;
+      await runCalculation();
+    } catch (err) {
+      status(err.message, 'error');
+    } finally {
+      savedBusy(item, false);
+      btn.textContent = 'Åpne';
+    }
+    return;
+  }
+
+  if (btn.dataset.act === 'rename') {
+    // Inline rather than prompt(): a modal dialog blocks the page, and this
+    // keeps the current name visible while it is edited.
+    const main = item.querySelector('.saved-main');
+    const current = item.querySelector('.saved-name').textContent;
+    main.innerHTML =
+      `<input class="saved-rename" type="text" maxlength="120" value="${esc(current)}">`;
+    const field = main.querySelector('input');
+    field.focus();
+    field.select();
+
+    /* Enter commits and then re-renders the list, which removes the field and
+     * fires blur - so without this flag every rename is sent twice. */
+    let done = false;
+    const commit = async () => {
+      if (done) return;
+      done = true;
+      const name = field.value.trim();
+      if (!name || name === current) { await loadSaved(); return; }
+      try {
+        await MB.apiJson('/api/beregninger/' + id, {
+          method: 'PATCH',
+          body: JSON.stringify({ name }),
+        });
+      } catch (err) {
+        status(err.message, 'error');
+      }
+      await loadSaved();
+    };
+    field.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') commit();
+      if (e.key === 'Escape') { done = true; loadSaved(); }
+    });
+    field.addEventListener('blur', commit);
+    return;
+  }
+
+  if (btn.dataset.act === 'del') {
+    // Two clicks instead of confirm(), for the same reason as above.
+    if (btn.dataset.armed !== '1') {
+      btn.dataset.armed = '1';
+      btn.textContent = 'Bekreft';
+      btn.classList.add('btn-danger');
+      setTimeout(() => {
+        if (!btn.isConnected || btn.dataset.armed !== '1') return;
+        delete btn.dataset.armed;
+        btn.textContent = 'Slett';
+        btn.classList.remove('btn-danger');
+      }, 4000);
+      return;
+    }
+    savedBusy(item, true);
+    try {
+      await MB.apiJson('/api/beregninger/' + id, { method: 'DELETE' });
+    } catch (err) {
+      status(err.message, 'error');
+    }
+    await loadSaved();
+  }
+}
+
+/* Guarded, because everything below this point in the file - the legend
+ * controls and the account chip - would be lost if these threw. A cached
+ * index.html without the section is enough to make that happen. */
+if ($('saved') && $('saved-list')) {
+  $('saved-list').addEventListener('click', onSavedClick);
+  $('saved').addEventListener('toggle', () => {
+    if ($('saved').open && !savedLoaded) loadSaved();
+  });
 }
 
 /* Small hand-rolled SVG chart - net volume as a function of target level. */
@@ -491,12 +779,14 @@ $('legend-close').addEventListener('click', () => { $('legend').hidden = true; }
  * the app, so there is nothing to show. */
 document.addEventListener('mb:ready', (e) => {
   const me = e.detail;
+  state.me = me;
 
   /* Local single-user mode has no accounts, roles or invitations, so the whole
    * chip would be noise - and "Logg ut" would do nothing. Leave the UI exactly
    * as it was before access control existed. */
   if (me.local_single_user) return;
 
+  if ($('saved')) $('saved').hidden = false;
   $('account').hidden = false;
   $('account-email').textContent = me.email;
   if (me.role === 'superadmin') {

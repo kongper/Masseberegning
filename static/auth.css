@@ -398,3 +398,6 @@
   border-radius: 11px;
   margin: 0 0 16px;
 }
+
+/* Two buttons can share a table cell now (copy + revoke). */
+.admin .row-actions { display: flex; gap: 6px; justify-content: flex-end; }

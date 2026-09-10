@@ -165,6 +165,41 @@ label .input-unit, label select { margin-top: 4px; }
 .slider-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-3); margin-top: 3px; }
 .slider-scale em { font-style: normal; color: var(--line-2); }
 
+/* ---------- mine beregninger ---------- */
+
+.saved { margin: 14px 0 0; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
+.saved > summary {
+  cursor: pointer; padding: 10px 12px; font-size: 12.5px; font-weight: 600;
+  color: var(--ink-2); list-style: none;
+}
+.saved > summary::-webkit-details-marker { display: none; }
+/* Own marker, so it can sit after the label rather than before it. */
+.saved > summary::after { content: '▾'; float: right; color: var(--ink-3); font-size: 11px; }
+.saved[open] > summary::after { content: '▴'; }
+.saved > summary:hover { color: var(--accent); }
+.saved-count { color: var(--ink-3); font-weight: 500; }
+
+.saved-list { border-top: 1px solid var(--line); padding: 4px 12px 10px; }
+.saved-list .hint { margin: 8px 0; }
+
+.saved-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 0; border-bottom: 1px solid var(--line);
+}
+.saved-item:last-child { border-bottom: 0; }
+.saved-main { flex: 1; min-width: 0; }
+.saved-name { display: block; font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.saved-meta { display: block; font-size: 11.5px; color: var(--ink-3); margin-top: 1px; }
+.saved-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+.saved-actions .btn { padding: 4px 8px; font-size: 11.5px; }
+.btn-danger { border-color: var(--err-line); color: #91312a; }
+.btn-danger:hover { background: var(--err-bg); border-color: #91312a; }
+.saved-rename { width: 100%; font-size: 13px; padding: 5px 8px; }
+
+/* Save row in the results block. */
+.save-row { display: flex; gap: 7px; margin-top: 8px; }
+.save-row input { flex: 1; min-width: 0; }
+
 .advanced { margin-top: 16px; border-top: 1px dashed var(--line-2); padding-top: 12px; }
 .advanced summary { cursor: pointer; font-size: 12.5px; color: var(--ink-2); font-weight: 550; }
 .advanced summary:hover { color: var(--accent); }

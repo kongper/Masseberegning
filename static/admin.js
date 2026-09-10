@@ -32,13 +32,39 @@
 
   /* ------------------------------------------------------------- invites */
 
+  async function copyText(text, btn, label = 'Kopier') {
+    try {
+      // The Clipboard API needs a secure context; select+execCommand is the
+      // fallback for plain-http local development.
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const t = document.createElement('textarea');
+        t.value = text; t.style.position = 'fixed'; t.style.opacity = '0';
+        document.body.appendChild(t); t.select();
+        document.execCommand('copy'); t.remove();
+      }
+      btn.textContent = 'Kopiert';
+    } catch {
+      btn.textContent = 'Kopier manuelt';
+    }
+    setTimeout(() => { btn.textContent = label; }, 2500);
+  }
+
+  /* Who an invitation is for, in one cell. */
+  function boundTo(i) {
+    if (i.email) return esc(i.email);
+    if (i.email_domain) return `alle på <strong>@${esc(i.email_domain)}</strong>`;
+    return '<span class="dim">åpen lenke</span>';
+  }
+
   function showInviteLink(inv) {
     const out = $('invite-out');
     const bound = inv.email ? ` for <strong>${esc(inv.email)}</strong>` : '';
     out.innerHTML = `
       <div class="invite-result">
-        <p>Lenken er laget${bound}. <strong>Den vises bare nå</strong> – kopier den
-        før du forlater siden.</p>
+        <p>Lenken er laget${bound}. Du kan hente den igjen fra tabellen under
+        så lenge invitasjonen er aktiv.</p>
         <div class="invite-link">
           <input id="inv-url" type="text" readonly value="${esc(inv.url)}">
           <button type="button" class="btn" id="inv-copy">Kopier</button>
@@ -49,23 +75,8 @@
     field.focus();
     field.select();
 
-    $('inv-copy').addEventListener('click', async () => {
-      const btn = $('inv-copy');
-      try {
-        // Clipboard API needs a secure context; the select+execCommand path
-        // is the fallback for plain-http local development.
-        if (navigator.clipboard && window.isSecureContext) {
-          await navigator.clipboard.writeText(inv.url);
-        } else {
-          field.select();
-          document.execCommand('copy');
-        }
-        btn.textContent = 'Kopiert';
-      } catch {
-        btn.textContent = 'Kopier manuelt';
-      }
-      setTimeout(() => { btn.textContent = 'Kopier'; }, 2500);
-    });
+    $('inv-copy').addEventListener('click',
+      () => copyText(inv.url, $('inv-copy')));
   }
 
   async function loadInvites() {
@@ -83,17 +94,38 @@
     tbody.innerHTML = rows.map(i => `
       <tr>
         <td>${esc(i.label) || '<span class="dim">–</span>'}</td>
-        <td>${i.email ? esc(i.email) : '<span class="dim">åpen lenke</span>'}</td>
+        <td>${boundTo(i)}</td>
         <td>${i.role_granted === 'superadmin'
               ? '<span class="badge">superadmin</span>' : 'Bruker'}</td>
         <td class="num">${i.uses} / ${i.max_uses}</td>
         <td><span class="pill ${i.status}">${STATUS_LABEL[i.status] || i.status}</span></td>
         <td class="dim">${fmtDate(i.expires_at)}</td>
         <td class="dim">${(i.redeemed_by || []).map(esc).join('<br>') || '–'}</td>
-        <td>${i.status === 'active'
+        <td class="row-actions">${i.status === 'active' && i.has_link
+              ? `<button class="btn btn-small" data-copy="${esc(i.id)}">Kopier lenke</button>`
+              : ''}${i.status === 'active'
               ? `<button class="btn btn-small btn-danger" data-revoke="${esc(i.id)}">Trekk tilbake</button>`
               : ''}</td>
       </tr>`).join('');
+
+    // Fetched per click rather than read from the list: the list is loaded on
+    // every page view, so the token is deliberately not in it.
+    tbody.querySelectorAll('[data-copy]').forEach(b => {
+      b.addEventListener('click', async () => {
+        b.disabled = true;
+        const was = b.textContent;
+        b.textContent = 'Henter …';
+        try {
+          const d = await MB.apiJson('/api/invitasjon/' + b.dataset.copy + '/lenke');
+          await copyText(d.url, b, was);
+        } catch (err) {
+          message('error', err.message, $('invite-out'));
+          b.textContent = was;
+        } finally {
+          b.disabled = false;
+        }
+      });
+    });
 
     tbody.querySelectorAll('[data-revoke]').forEach(b => {
       b.addEventListener('click', async () => {
@@ -212,11 +244,14 @@
       const uses = Number($('inv-uses').value) || 1;
 
       // Mirrored server-side and in a database constraint; caught here so the
-      // admin gets the explanation before a round-trip.
-      if (email && uses !== 1) {
+      // admin gets the explanation before a round-trip. A domain rule
+      // (@vg.no) is exempt - being multi-use is the whole point of it.
+      const isDomain = email.startsWith('@');
+      if (email && !isDomain && uses !== 1) {
         message('error',
-          'En invitasjon bundet til en e-postadresse kan bare brukes én gang. ' +
-          'Sett antall bruk til 1, eller la e-postfeltet stå tomt.', $('invite-out'));
+          'En invitasjon bundet til én e-postadresse kan bare brukes én gang. ' +
+          'Sett antall bruk til 1, eller skriv domenet i stedet – f.eks. @vg.no ' +
+          'for alle med en verifisert adresse der.', $('invite-out'));
         return;
       }
 

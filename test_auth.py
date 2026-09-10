@@ -394,3 +394,169 @@ def test_area_cap_rejects_an_oversized_polygon(client, member_headers):
     assert r.status_code == 422
     assert "km²" in r.json()["detail"]
     appmod._calc_minute.reset()
+
+
+# ------------------------------------------- domain invites over HTTP
+
+
+def test_at_domain_in_the_email_field_creates_a_domain_invite(client, admin_headers):
+    r = client.post("/api/invitasjon",
+                    json={"label": "VG", "email": "@vg.no", "max_uses": 8},
+                    headers=admin_headers)
+    assert r.status_code == 201, r.text
+    assert r.json()["email_domain"] == "vg.no"
+    assert r.json()["email"] is None
+
+
+def test_a_domain_invite_may_be_multi_use(client, admin_headers):
+    """The single-use rule is for addresses. A domain link is meant to be shared."""
+    r = client.post("/api/invitasjon", json={"email": "@vg.no", "max_uses": 25},
+                    headers=admin_headers)
+    assert r.status_code == 201
+    assert r.json()["max_uses"] == 25
+
+
+def test_a_bare_word_in_the_email_field_is_refused(client, admin_headers):
+    r = client.post("/api/invitasjon", json={"email": "vg"}, headers=admin_headers)
+    assert r.status_code == 400
+    assert "domene" in r.json()["detail"] or "e-postadresse" in r.json()["detail"]
+
+
+def test_the_multi_use_error_suggests_the_domain_form(client, admin_headers):
+    """The message should teach the feature, not just refuse."""
+    r = client.post("/api/invitasjon",
+                    json={"email": "kari@vg.no", "max_uses": 5},
+                    headers=admin_headers)
+    assert r.status_code == 400
+    assert "@vg.no" in r.json()["detail"] or "domenet" in r.json()["detail"]
+
+
+def test_wrong_domain_message_names_the_domain(client, admin_headers, bearer, new_id):
+    made = client.post("/api/invitasjon", json={"email": "@vg.no", "max_uses": 5},
+                       headers=admin_headers).json()
+    tok = made["url"].split("invitasjon=")[1]
+
+    r = client.post("/api/invitasjon/innloes", json={"token": tok},
+                    headers=bearer(new_id(), "kari@nrk.no"))
+
+    assert r.status_code == 403
+    assert "@vg.no" in r.json()["detail"]
+
+
+def test_someone_at_the_domain_gets_in(client, admin_headers, bearer, new_id):
+    made = client.post("/api/invitasjon", json={"email": "@vg.no", "max_uses": 5},
+                       headers=admin_headers).json()
+    tok = made["url"].split("invitasjon=")[1]
+
+    r = client.post("/api/invitasjon/innloes", json={"token": tok},
+                    headers=bearer(new_id(), "kari@vg.no"))
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "active"
+
+
+# ------------------------------------------- revealing links over HTTP
+
+
+def test_the_link_can_be_fetched_again_and_is_audited(client, admin_headers):
+    made = client.post("/api/invitasjon", json={"label": "team", "max_uses": 4},
+                       headers=admin_headers).json()
+
+    again = client.get(f"/api/invitasjon/{made['id']}/lenke", headers=admin_headers)
+
+    assert again.status_code == 200
+    assert again.json()["url"] == made["url"], "must be the same link, not a new one"
+
+    events = client.get("/api/revisjon", headers=admin_headers).json()["hendelser"]
+    assert any(e["action"] == "invite.reveal" for e in events)
+
+
+def test_the_list_never_carries_the_token(client, admin_headers):
+    """The list is fetched on every page load; secrets must not ride along."""
+    client.post("/api/invitasjon", json={"label": "team", "max_uses": 4},
+                headers=admin_headers)
+    body = client.get("/api/invitasjon", headers=admin_headers).text
+
+    listed = client.get("/api/invitasjon", headers=admin_headers).json()["invitasjoner"][0]
+    assert listed["has_link"] is True
+    assert "token" not in body and "url" not in body
+
+
+def test_a_revoked_invite_offers_no_link(client, admin_headers):
+    made = client.post("/api/invitasjon", json={"label": "x", "max_uses": 4},
+                       headers=admin_headers).json()
+    client.delete(f"/api/invitasjon/{made['id']}", headers=admin_headers)
+
+    r = client.get(f"/api/invitasjon/{made['id']}/lenke", headers=admin_headers)
+    assert r.status_code == 404
+
+
+def test_an_ordinary_member_cannot_fetch_a_link(client, admin_headers, member_headers):
+    made = client.post("/api/invitasjon", json={"label": "x", "max_uses": 4},
+                       headers=admin_headers).json()
+
+    r = client.get(f"/api/invitasjon/{made['id']}/lenke", headers=member_headers)
+    assert r.status_code == 403
+
+
+# --------------------------------------- saved calculations over HTTP
+
+
+CALC = {
+    "name": "Storhove",
+    "polygon": [[10.46, 61.11], [10.47, 61.11], [10.47, 61.12], [10.46, 61.12]],
+    "params": {"mode": "balansert", "soil_depth": 2.0},
+    "summary": {"level": 201.15, "area_m2": 144270.0, "cut_bank_m3": 534278.0,
+                "fill_void_m3": 485707.0, "net_bank_m3": 0.0},
+}
+
+
+def test_save_list_open_delete(client, member_headers):
+    saved = client.post("/api/beregninger", json=CALC, headers=member_headers)
+    assert saved.status_code == 201, saved.text
+    cid = saved.json()["id"]
+
+    listed = client.get("/api/beregninger", headers=member_headers).json()["beregninger"]
+    assert [c["name"] for c in listed] == ["Storhove"]
+
+    opened = client.get(f"/api/beregninger/{cid}", headers=member_headers).json()
+    assert opened["polygon"] == CALC["polygon"]
+    assert opened["params"]["mode"] == "balansert"
+
+    assert client.delete(f"/api/beregninger/{cid}", headers=member_headers).status_code == 200
+    assert client.get(f"/api/beregninger/{cid}", headers=member_headers).status_code == 404
+
+
+def test_unknown_parameters_are_dropped_not_stored(client, member_headers):
+    """A jsonb column that gets fed back to the calculator needs a whitelist."""
+    body = dict(CALC)
+    body["params"] = {"mode": "laveste", "evil": "'; drop table calculation --",
+                      "resolution": 2}
+    cid = client.post("/api/beregninger", json=body, headers=member_headers).json()["id"]
+
+    opened = client.get(f"/api/beregninger/{cid}", headers=member_headers).json()
+    assert opened["params"] == {"mode": "laveste", "resolution": 2}
+
+
+def test_saving_requires_membership(client, bearer, new_id):
+    r = client.post("/api/beregninger", json=CALC,
+                    headers=bearer(new_id(), "stranger@internet.com"))
+    assert r.status_code == 403
+
+
+def test_a_calculation_is_invisible_to_another_member(client, member_headers,
+                                                      admin_headers):
+    """Superadmin is not a back door into someone's saved work."""
+    cid = client.post("/api/beregninger", json=CALC,
+                      headers=member_headers).json()["id"]
+
+    assert client.get(f"/api/beregninger/{cid}", headers=admin_headers).status_code == 404
+    assert client.delete(f"/api/beregninger/{cid}", headers=admin_headers).status_code == 404
+    assert client.get("/api/beregninger", headers=admin_headers).json()["beregninger"] == []
+
+
+def test_rename(client, member_headers):
+    cid = client.post("/api/beregninger", json=CALC, headers=member_headers).json()["id"]
+    r = client.patch(f"/api/beregninger/{cid}", json={"name": "Storhove sør"},
+                     headers=member_headers)
+    assert r.status_code == 200 and r.json()["name"] == "Storhove sør"

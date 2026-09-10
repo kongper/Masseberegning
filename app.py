@@ -33,6 +33,7 @@ from shapely.geometry import Polygon
 from shapely.ops import transform as shapely_transform
 
 import auth
+import calculations
 import db
 import demcache
 import invites
@@ -114,6 +115,7 @@ if settings.allowed_origins:
     )
 
 app.include_router(invites.router)
+app.include_router(calculations.router)
 
 
 class Request_(BaseModel):

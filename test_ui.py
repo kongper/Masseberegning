@@ -133,6 +133,13 @@ with sync_playwright() as pw:
     check("sensitivity chart drawn", page.locator("#results svg.chart path.curve").count() == 1)
     check("caveat shown", "Forbehold" in res)
 
+    # This run is in local single-user mode, which has no accounts - so there
+    # is nothing to own a saved calculation, and neither piece of that UI
+    # should appear. The invariant is easy to break from the other side, where
+    # everything is visible.
+    check("no save block without an account", page.locator("#btn-save").count() == 0)
+    check("mine beregninger hidden without an account", page.is_hidden("#saved"))
+
     print("\n=== Map overlay ===")
     check("cut/fill overlay added", page.locator("#map img.leaflet-image-layer").count() >= 1)
     check("legend visible", page.locator("#legend").is_visible())

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -370,35 +371,89 @@ def delete_user(user_id: str) -> bool:
 # ------------------------------------------------------------------ invites
 
 
+def normalise_domain(value: str) -> str:
+    """Turn what an admin typed into a bare lower-case domain, or raise.
+
+    Accepts "@vg.no", "vg.no", " VG.NO ". Rejects a full address, because
+    "kari@vg.no" in the domain field would match nobody and look like a
+    working restriction.
+    """
+    d = value.strip().lower().lstrip("@")
+    if "@" in d:
+        raise ValueError(
+            "Skriv bare domenet, f.eks. @vg.no - ikke en full e-postadresse."
+        )
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", d):
+        raise ValueError(f"«{value}» ser ikke ut som et domene.")
+    return d
+
+
+def domain_of(email: str) -> str:
+    return email.strip().lower().rpartition("@")[2]
+
+
 def create_invite(
     *,
     created_by: str,
     label: str | None,
     email: str | None,
+    email_domain: str | None = None,
     role_granted: str,
     max_uses: int,
     expires_in_days: int,
 ) -> tuple[str, dict]:
     """Create an invite. Returns (raw_token, row).
 
-    The raw token is returned exactly once, here. Only its hash is stored, so
-    there is no way to show it again later.
+    The raw token is both returned and stored. Stored so a superadmin can copy
+    an open link again rather than revoking and reissuing it; see the note in
+    migrations/002. It is erased as soon as the invite is spent, and reachable
+    only through `reveal_invite_token`, which audits every read.
     """
     raw = new_token()
     expires_at = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
     with pool().connection() as conn:
+        # Opportunistic tidy-up: bounded, runs only when an admin creates an
+        # invite, and keeps spent invitations from holding a live-looking
+        # secret indefinitely.
+        conn.execute(
+            """
+            update invite set token = null
+             where token is not null
+               and (revoked_at is not null or expires_at <= now() or uses >= max_uses)
+            """
+        )
         row = conn.execute(
             """
-            insert into invite (token_hash, label, email, role_granted,
-                                max_uses, expires_at, created_by)
-                 values (%s, %s, %s, %s, %s, %s, %s)
-            returning id, label, email, role_granted, max_uses, uses,
-                      expires_at, created_at, revoked_at
+            insert into invite (token_hash, token, label, email, email_domain,
+                                role_granted, max_uses, expires_at, created_by)
+                 values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            returning id, label, email, email_domain, role_granted, max_uses,
+                      uses, expires_at, created_at, revoked_at
             """,
-            (hash_token(raw), label, email, role_granted, max_uses, expires_at, created_by),
+            (hash_token(raw), raw, label, email, email_domain,
+             role_granted, max_uses, expires_at, created_by),
         ).fetchone()
         conn.commit()
     return raw, dict(row)
+
+
+def reveal_invite_token(invite_id: str) -> str | None:
+    """The raw token of an invite that is still usable, or None.
+
+    Refuses anything not currently active. A revoked, expired or used-up
+    invitation has nothing worth copying, and handing one back would invite
+    someone to circulate a link that cannot work.
+    """
+    with pool().connection() as conn:
+        row = conn.execute(
+            """
+            select token from invite
+             where id = %s and token is not null
+               and revoked_at is null and expires_at > now() and uses < max_uses
+            """,
+            (invite_id,),
+        ).fetchone()
+    return row["token"] if row else None
 
 
 def list_invites() -> list[dict[str, Any]]:
@@ -406,9 +461,14 @@ def list_invites() -> list[dict[str, Any]]:
     with pool().connection() as conn:
         rows = conn.execute(
             """
-            select i.id, i.label, i.email, i.role_granted, i.max_uses, i.uses,
+            select i.id, i.label, i.email, i.email_domain, i.role_granted,
+                   i.max_uses, i.uses,
                    i.expires_at, i.created_at, i.revoked_at,
                    c.email as created_by_email,
+                   -- Never the token itself: the list is fetched on every page
+                   -- load, and a secret should not ride along with it. Only
+                   -- whether a copy is still possible.
+                   (i.token is not null) as has_link,
                    case
                      when i.revoked_at is not null then 'revoked'
                      when i.expires_at <= now()    then 'expired'
@@ -434,7 +494,7 @@ def list_invites() -> list[dict[str, Any]]:
 def revoke_invite(invite_id: str) -> dict | None:
     with pool().connection() as conn:
         row = conn.execute(
-            "update invite set revoked_at = now() "
+            "update invite set revoked_at = now(), token = null "
             "where id = %s and revoked_at is null returning id, label",
             (invite_id,),
         ).fetchone()
@@ -447,8 +507,9 @@ class RedeemResult:
 
     OK = "ok"
     ALREADY_MEMBER = "already_member"
-    INVALID = "invalid"          # unknown, expired, revoked, or used up
-    WRONG_EMAIL = "wrong_email"  # bound to a different address
+    INVALID = "invalid"            # unknown, expired, revoked, or used up
+    WRONG_EMAIL = "wrong_email"    # bound to a different address
+    WRONG_DOMAIN = "wrong_domain"  # bound to a different domain
 
 
 @dataclass
@@ -456,6 +517,7 @@ class Redeemed:
     outcome: str
     user: User | None = None
     bound_email: str | None = None
+    bound_domain: str | None = None
 
 
 def redeem_invite(*, raw_token: str, user_id: str, email: str,
@@ -485,15 +547,21 @@ def redeem_invite(*, raw_token: str, user_id: str, email: str,
             claimed = conn.execute(
                 """
                 update invite
-                   set uses = uses + 1
+                   set uses = uses + 1,
+                       -- Erase the stored link at the moment it becomes
+                       -- unusable, in the same statement that spends it, so
+                       -- there is no window where a dead invite still holds a
+                       -- working-looking token.
+                       token = case when uses + 1 >= max_uses then null else token end
                  where token_hash = %s
                    and revoked_at is null
                    and expires_at > now()
                    and uses < max_uses
                    and (email is null or lower(email) = lower(%s))
+                   and (email_domain is null or email_domain = lower(split_part(%s, '@', 2)))
                 returning id, role_granted, created_by
                 """,
-                (token_hash, email),
+                (token_hash, email, email),
             ).fetchone()
 
             if claimed is None:
@@ -503,14 +571,18 @@ def redeem_invite(*, raw_token: str, user_id: str, email: str,
                 # hard for a recipient to recover from.
                 bound = conn.execute(
                     """
-                    select email from invite
-                     where token_hash = %s and email is not null
+                    select email, email_domain from invite
+                     where token_hash = %s
+                       and (email is not null or email_domain is not null)
                        and revoked_at is null and expires_at > now() and uses < max_uses
                     """,
                     (token_hash,),
                 ).fetchone()
-                if bound:
+                if bound and bound["email"]:
                     return Redeemed(RedeemResult.WRONG_EMAIL, bound_email=bound["email"])
+                if bound and bound["email_domain"]:
+                    return Redeemed(RedeemResult.WRONG_DOMAIN,
+                                    bound_domain=bound["email_domain"])
                 return Redeemed(RedeemResult.INVALID)
 
             row = conn.execute(
@@ -565,3 +637,89 @@ def list_audit(limit: int = 200) -> list[dict[str, Any]]:
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ------------------------------------------------------- saved calculations
+#
+# Every function here takes `user_id` and puts it in the WHERE clause. That is
+# the whole access-control story for saved work, so it is deliberately not
+# optional anywhere: there is no `get_calculation(id)` that a future caller
+# could reach for and quietly leak someone else's row.
+
+
+def save_calculation(*, user_id: str, name: str, polygon: list,
+                     params: dict, summary: dict) -> dict:
+    import json
+
+    with pool().connection() as conn:
+        row = conn.execute(
+            """
+            insert into calculation (user_id, name, polygon, params, summary)
+                 values (%s, %s, %s, %s, %s)
+            returning id, name, summary, created_at, updated_at
+            """,
+            (user_id, name.strip(), json.dumps(polygon),
+             json.dumps(params), json.dumps(summary)),
+        ).fetchone()
+        conn.commit()
+    return dict(row)
+
+
+def list_calculations(user_id: str, limit: int = 200) -> list[dict[str, Any]]:
+    """The list view: no polygon, no params - just enough to choose one."""
+    with pool().connection() as conn:
+        rows = conn.execute(
+            """
+            select id, name, summary, created_at, updated_at
+              from calculation
+             where user_id = %s
+             order by created_at desc
+             limit %s
+            """,
+            (user_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_calculation(user_id: str, calc_id: str) -> dict | None:
+    with pool().connection() as conn:
+        row = conn.execute(
+            """
+            select id, name, polygon, params, summary, created_at, updated_at
+              from calculation
+             where id = %s and user_id = %s
+            """,
+            (calc_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def rename_calculation(user_id: str, calc_id: str, name: str) -> dict | None:
+    with pool().connection() as conn:
+        row = conn.execute(
+            """
+            update calculation set name = %s, updated_at = now()
+             where id = %s and user_id = %s
+            returning id, name, summary, created_at, updated_at
+            """,
+            (name.strip(), calc_id, user_id),
+        ).fetchone()
+        conn.commit()
+    return dict(row) if row else None
+
+
+def delete_calculation(user_id: str, calc_id: str) -> bool:
+    with pool().connection() as conn:
+        cur = conn.execute(
+            "delete from calculation where id = %s and user_id = %s",
+            (calc_id, user_id),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def count_calculations(user_id: str) -> int:
+    with pool().connection() as conn:
+        return int(conn.execute(
+            "select count(*) as n from calculation where user_id = %s", (user_id,)
+        ).fetchone()["n"])

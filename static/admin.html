@@ -52,8 +52,10 @@
         </label>
         <!-- Label kept to one line so every field in the row aligns; the
              optional-ness is covered by the placeholder and the hint below. -->
-        <label>Bundet til e-post
-          <input id="inv-email" type="email" placeholder="valgfritt">
+        <!-- Not type=email: "@vg.no" is a valid entry here but not a valid
+             address, and the browser would refuse to submit the form. -->
+        <label>Bundet til
+          <input id="inv-email" type="text" placeholder="valgfritt, eller @vg.no">
         </label>
         <label>Antall bruk
           <input id="inv-uses" type="number" min="1" max="100" value="1">
@@ -69,8 +71,11 @@
         </label>
         <button type="submit" class="btn btn-primary">Opprett lenke</button>
       </form>
-      <p class="admin-hint">En invitasjon som er bundet til en e-postadresse kan bare
-      brukes én gang. Lenken vises kun én gang – kopier den før du forlater siden.</p>
+      <p class="admin-hint">Skriv en full e-postadresse for å invitere én person –
+      da kan lenken bare brukes én gang. Skriv bare domenet, f.eks.
+      <code>@vg.no</code>, for å slippe inn alle med en verifisert adresse der;
+      en slik lenke kan brukes så mange ganger du velger. La feltet stå tomt for
+      en åpen lenke. Aktive lenker kan hentes igjen fra tabellen under.</p>
       <div id="invite-out"></div>
     </section>
 
@@ -81,7 +86,7 @@
         <table>
           <thead>
             <tr>
-              <th>Merkelapp</th><th>Bundet til</th><th>Rolle</th>
+              <th>Merkelapp</th><th>Gjelder</th><th>Rolle</th>
               <th class="num">Bruk</th><th>Status</th><th>Utløper</th>
               <th>Innløst av</th><th></th>
             </tr>

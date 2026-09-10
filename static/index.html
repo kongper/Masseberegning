@@ -38,6 +38,16 @@
 
     <div class="panel-body">
 
+      <!-- SAVED ---------------------------------------------------------
+           Above step 1 because that is where you reach for it: opening a
+           saved calculation replaces the whole 1-2-3 flow. Collapsed by
+           default and hidden entirely in local single-user mode, where there
+           is no account to own the rows. -->
+      <details class="saved" id="saved" hidden>
+        <summary>Mine beregninger <span class="saved-count" id="saved-count"></span></summary>
+        <div class="saved-list" id="saved-list"></div>
+      </details>
+
       <!-- 1. AREA ------------------------------------------------------- -->
       <section class="step">
         <h2><span class="num">1</span> Område</h2>

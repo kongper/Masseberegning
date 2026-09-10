@@ -386,3 +386,163 @@ def test_listing_shows_computed_invite_status(database, new_id):
     assert by_label["used"]["status"] == "used_up"
     assert by_label["used"]["redeemed_by"] == ["a@firma.no"]
     assert by_label["gone"]["status"] == "revoked"
+
+
+# ------------------------------------------------- domain-bound invitations
+
+
+def test_domain_invite_admits_anyone_at_that_domain(database, new_id):
+    db = database
+    admin = _admin(db)
+    raw, _ = _invite(db, admin, email=None, email_domain="vg.no", max_uses=5)
+
+    a = db.redeem_invite(raw_token=raw, user_id=new_id(), email="kari@vg.no")
+    b = db.redeem_invite(raw_token=raw, user_id=new_id(), email="ola@vg.no")
+
+    assert a.outcome == db.RedeemResult.OK
+    assert b.outcome == db.RedeemResult.OK
+
+
+def test_domain_invite_refuses_another_domain_and_says_which(database, new_id):
+    db = database
+    admin = _admin(db)
+    raw, _ = _invite(db, admin, email=None, email_domain="vg.no", max_uses=5)
+
+    r = db.redeem_invite(raw_token=raw, user_id=new_id(), email="kari@nrk.no")
+
+    assert r.outcome == db.RedeemResult.WRONG_DOMAIN
+    assert r.bound_domain == "vg.no"
+
+
+def test_domain_matching_is_case_insensitive(database, new_id):
+    db = database
+    admin = _admin(db)
+    raw, _ = _invite(db, admin, email=None, email_domain="vg.no", max_uses=3)
+
+    r = db.redeem_invite(raw_token=raw, user_id=new_id(), email="Kari@VG.NO")
+
+    assert r.outcome == db.RedeemResult.OK
+
+
+def test_subdomain_does_not_satisfy_a_domain_invite(database, new_id):
+    """Exact match only. mail.vg.no is a different mail system."""
+    db = database
+    admin = _admin(db)
+    raw, _ = _invite(db, admin, email=None, email_domain="vg.no", max_uses=3)
+
+    r = db.redeem_invite(raw_token=raw, user_id=new_id(), email="kari@mail.vg.no")
+
+    assert r.outcome == db.RedeemResult.WRONG_DOMAIN
+
+
+def test_a_refused_domain_attempt_does_not_consume_a_use(database, new_id):
+    db = database
+    admin = _admin(db)
+    raw, row = _invite(db, admin, email=None, email_domain="vg.no", max_uses=2)
+
+    db.redeem_invite(raw_token=raw, user_id=new_id(), email="x@nrk.no")
+    ok = db.redeem_invite(raw_token=raw, user_id=new_id(), email="kari@vg.no")
+
+    assert ok.outcome == db.RedeemResult.OK
+    with db.pool().connection() as conn:
+        uses = conn.execute("select uses from invite where id = %s",
+                            (row["id"],)).fetchone()["uses"]
+    assert uses == 1
+
+
+def test_email_and_domain_cannot_both_be_set(database):
+    import psycopg
+
+    db = database
+    admin = _admin(db)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _invite(db, admin, email="kari@vg.no", email_domain="vg.no", max_uses=1)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("@vg.no", "vg.no"), ("vg.no", "vg.no"), ("  VG.NO  ", "vg.no"),
+    ("@sub.example.co.uk", "sub.example.co.uk"),
+])
+def test_normalise_domain_accepts(database, raw, expected):
+    assert database.normalise_domain(raw) == expected
+
+
+@pytest.mark.parametrize("bad", ["kari@vg.no", "@vg", "vg", "@.no", "@-vg.no", "@vg..no", ""])
+def test_normalise_domain_rejects(database, bad):
+    with pytest.raises(ValueError):
+        database.normalise_domain(bad)
+
+
+# --------------------------------------------------- revealing invite links
+
+
+def test_an_active_invite_link_can_be_read_back(database):
+    db = database
+    admin = _admin(db)
+    raw, row = _invite(db, admin, max_uses=5, email=None)
+
+    assert db.reveal_invite_token(str(row["id"])) == raw
+
+
+def test_the_link_is_erased_when_the_last_use_is_spent(database, new_id):
+    """The token must die in the same statement that spends the invite.
+
+    Otherwise there is a window in which a used-up invitation still hands out a
+    token that looks like it works.
+    """
+    db = database
+    admin = _admin(db)
+    raw, row = _invite(db, admin, max_uses=2, email=None)
+
+    db.redeem_invite(raw_token=raw, user_id=new_id(), email="a@x.no")
+    assert db.reveal_invite_token(str(row["id"])) == raw, "still usable after 1 of 2"
+
+    db.redeem_invite(raw_token=raw, user_id=new_id(), email="b@x.no")
+    assert db.reveal_invite_token(str(row["id"])) is None
+
+    with db.pool().connection() as conn:
+        stored = conn.execute("select token from invite where id = %s",
+                              (row["id"],)).fetchone()["token"]
+    assert stored is None, "the raw token must be gone from the row, not just hidden"
+
+
+def test_revoking_erases_the_link(database):
+    db = database
+    admin = _admin(db)
+    _, row = _invite(db, admin, max_uses=5, email=None)
+
+    db.revoke_invite(str(row["id"]))
+
+    assert db.reveal_invite_token(str(row["id"])) is None
+    with db.pool().connection() as conn:
+        assert conn.execute("select token from invite where id = %s",
+                            (row["id"],)).fetchone()["token"] is None
+
+
+def test_an_expired_invite_offers_no_link(database):
+    db = database
+    admin = _admin(db)
+    _, row = _invite(db, admin, max_uses=5, email=None)
+    with db.pool().connection() as conn:
+        conn.execute("update invite set expires_at = now() - interval '1 hour' "
+                     "where id = %s", (row["id"],))
+        conn.commit()
+
+    assert db.reveal_invite_token(str(row["id"])) is None
+
+
+def test_creating_an_invite_tidies_up_spent_tokens(database):
+    """The opportunistic cleanup: expired rows should not keep a live token."""
+    db = database
+    admin = _admin(db)
+    _, stale = _invite(db, admin, max_uses=5, email=None)
+    with db.pool().connection() as conn:
+        conn.execute("update invite set expires_at = now() - interval '1 hour' "
+                     "where id = %s", (stale["id"],))
+        conn.commit()
+
+    _invite(db, admin, label="new one")   # triggers the cleanup
+
+    with db.pool().connection() as conn:
+        assert conn.execute("select token from invite where id = %s",
+                            (stale["id"],)).fetchone()["token"] is None

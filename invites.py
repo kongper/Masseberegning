@@ -11,7 +11,7 @@ from datetime import datetime
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 import db
 from auth import Principal, client_ip, load_membership, require_member, require_superadmin, require_user
@@ -57,7 +57,11 @@ def invite_url(raw_token: str) -> str:
 
 class InviteCreate(BaseModel):
     label: str | None = Field(None, max_length=120)
-    email: EmailStr | None = None
+    # One field for both shapes, because that is how it reads in the form:
+    # "kari@vg.no" binds the invitation to her, "@vg.no" binds it to anyone
+    # with a verified address at that domain. Not EmailStr, since "@vg.no" is
+    # not an address - validated in the handler instead.
+    email: str | None = Field(None, max_length=254)
     role_granted: str = Field("user", pattern="^(user|superadmin)$")
     max_uses: int = Field(1, ge=1, le=100)
     expires_in_days: int | None = None
@@ -132,6 +136,12 @@ def innloes(body: Redeem, request: Request, principal: Principal = Depends(requi
             f"Du er logget inn som {principal.email}. "
             "Logg inn med den inviterte adressen.",
         )
+    if result.outcome == db.RedeemResult.WRONG_DOMAIN:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"Invitasjonen gjelder bare adresser på @{result.bound_domain}. "
+            f"Du er logget inn som {principal.email}.",
+        )
     if result.outcome == db.RedeemResult.INVALID:
         # One generic message for unknown, expired, revoked and used-up. There
         # is no reason to let the holder of a bad token learn which it was.
@@ -170,36 +180,79 @@ def opprett_invitasjon(body: InviteCreate, admin: db.User = Depends(require_supe
             f"Gyldighet må være mellom 1 og {settings.invite_max_days} dager.",
         )
 
-    email = str(body.email).strip().lower() if body.email else None
+    email: str | None = None
+    domain: str | None = None
+    typed = (body.email or "").strip()
 
-    # Mirrors the email_invite_is_single_use constraint, so the caller gets a
-    # clear message instead of a database error.
-    if email and body.max_uses != 1:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "En invitasjon som er bundet til en e-postadresse kan bare brukes én gang.",
-        )
+    if typed.startswith("@"):
+        # A domain rule. Multi-use is the point of it, so the single-use
+        # constraint below does not apply.
+        try:
+            domain = db.normalise_domain(typed)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    elif typed:
+        email = typed.lower()
+        if "@" not in email or email.startswith("@") or email.endswith("@"):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Skriv en full e-postadresse, eller bare domenet med krøllalfa foran "
+                "(f.eks. @vg.no).",
+            )
+        # Mirrors the email_invite_is_single_use constraint, so the caller gets
+        # a clear message instead of a database error.
+        if body.max_uses != 1:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "En invitasjon som er bundet til en e-postadresse kan bare brukes én gang. "
+                "Vil du invitere flere fra samme sted, skriv domenet i stedet, f.eks. @vg.no.",
+            )
 
     raw, row = db.create_invite(
         created_by=admin.id,
         label=body.label,
         email=email,
+        email_domain=domain,
         role_granted=body.role_granted,
         max_uses=body.max_uses,
         expires_in_days=days,
     )
-    db.audit(admin.id, admin.email, "invite.create", target=email or body.label,
-             detail={"role": body.role_granted, "max_uses": body.max_uses, "days": days})
+    db.audit(admin.id, admin.email, "invite.create",
+             target=email or (f"@{domain}" if domain else None) or body.label,
+             detail={"role": body.role_granted, "max_uses": body.max_uses,
+                     "days": days, "domain": domain})
 
     return {
         "id": str(row["id"]),
         "url": invite_url(raw),
         "label": row["label"],
         "email": row["email"],
+        "email_domain": row["email_domain"],
         "role_granted": row["role_granted"],
         "max_uses": row["max_uses"],
         "expires_at": row["expires_at"],
     }
+
+
+@router.get("/invitasjon/{invite_id}/lenke")
+def hent_lenke(invite_id: str, admin: db.User = Depends(require_superadmin),
+               _db: None = Depends(requires_database)):
+    """Re-read the link for an invitation that is still usable.
+
+    Separate from the list on purpose. The list is fetched on every page load,
+    so putting tokens in it would spray them through logs, caches and browser
+    history for invitations nobody was asking about. Here each read is a
+    deliberate act, and each one is audited.
+    """
+    raw = db.reveal_invite_token(invite_id)
+    if raw is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Ingen lenke å hente. Invitasjonen er brukt opp, utløpt eller trukket "
+            "tilbake - eller den ble laget før lenkene ble lagret.",
+        )
+    db.audit(admin.id, admin.email, "invite.reveal", target=invite_id)
+    return {"id": invite_id, "url": invite_url(raw)}
 
 
 @router.get("/invitasjon")
