@@ -18,15 +18,15 @@ Supabase does two jobs here:
 ## 1. The five values you are collecting
 
 Everything below exists to fill in this table. Write them down as you go — you
-will paste them into Fly and GitHub in §8.
+will paste them into Google Cloud and GitHub in §8.
 
 | | Value | Looks like | Goes to |
 |---|---|---|---|
 | 1 | Project URL | `https://abcdefghijkl.supabase.co` | GitHub variable `SUPABASE_URL` |
 | 2 | Publishable key | `sb_publishable_xxxxxxxx` | GitHub variable `SUPABASE_PUBLISHABLE_KEY` |
-| 3 | Connection string | `postgresql://postgres.abcdefghijkl:PASSWORD@aws-N-YOUR-REGION.pooler.supabase.com:5432/postgres` | Fly secret `DATABASE_URL` |
-| 4 | JWKS URL | `https://abcdefghijkl.supabase.co/auth/v1/.well-known/jwks.json` | Fly secret `SUPABASE_JWKS_URL` |
-| 5 | Issuer | `https://abcdefghijkl.supabase.co/auth/v1` | Fly secret `SUPABASE_JWT_ISSUER` |
+| 3 | Connection string | `postgresql://postgres.abcdefghijkl:PASSWORD@aws-N-YOUR-REGION.pooler.supabase.com:5432/postgres` | Secret Manager `masseberegning-db-url` |
+| 4 | JWKS URL | `https://abcdefghijkl.supabase.co/auth/v1/.well-known/jwks.json` | `env.cloudrun.yaml` |
+| 5 | Issuer | `https://abcdefghijkl.supabase.co/auth/v1` | `env.cloudrun.yaml` |
 
 4 and 5 are just the project ref with a suffix, so really you are collecting
 the ref, the publishable key, and the database password.
@@ -46,7 +46,8 @@ it off.
   users are personal data and belong in the EEA.
 - **Database password:** generate one and put it in a password manager now. It
   is shown once, and you need it in §5. If you lose it you can reset it under
-  **Project Settings → Database**, but that means updating the Fly secret too.
+  **Project Settings → Database**, but that means adding a new version of the
+  `masseberegning-db-url` secret too, and redeploying to pick it up.
 
 Wait for provisioning to finish before continuing — some pages show
 placeholder values while the project is still building.
@@ -115,7 +116,7 @@ or `RS256`. An empty array means the rotation in step 2 has not happened —
 the API will reject every token until it has.
 
 > If you skip this section entirely, the API can still work using the legacy
-> shared secret: set the Fly secret `SUPABASE_JWT_SECRET` to the JWT secret
+> shared secret: set `SUPABASE_JWT_SECRET` to the JWT secret
 > from this page and leave `SUPABASE_JWKS_URL` unset. It is a worse setup —
 > the same secret both signs and verifies — so only use it if the migration
 > gives you trouble.
@@ -162,8 +163,9 @@ wrongly.
 psql "postgresql://postgres.<ref>:<password>@aws-N-YOUR-REGION.pooler.supabase.com:5432/postgres" -c "select now()"
 ```
 
-No `psql`? Skip it — the API's `/healthz` reports `"db":"ok"` and is a better
-check anyway, because it proves the connection works *from Fly*.
+No `psql`? Skip it — the API's `/readyz` is a better check anyway, because it
+proves the connection works *from the API's own network*, which is the only
+place it has to work.
 
 ---
 
@@ -276,7 +278,11 @@ at all.
 
 ## 8. Where the values go
 
-**Fly secrets** — carry a password or reveal the project ref:
+**Secret Manager** — the connection string is the only real secret, because it
+carries the database password. The JWKS URL and the issuer are *not* secrets:
+they contain the project ref, which is already published in `config.js` for
+the browser to sign in with, so they live in the committed
+`env.cloudrun.yaml` where the API's configuration can actually be reviewed.
 
 > **Copy this string from the dashboard's Connect button rather than from
 > here.** Three parts of it are specific to your project and none of them can
@@ -294,11 +300,22 @@ at all.
 > The Connect dialog fills in the first two for you and leaves only the
 > password to replace.
 
+```bash
+printf '%s' 'postgresql://postgres.<ref>:<password>@aws-N-YOUR-REGION.pooler.supabase.com:5432/postgres' \
+  | gcloud secrets create masseberegning-db-url --data-file=-
 ```
-fly secrets set \
-  DATABASE_URL="postgresql://postgres.<ref>:<password>@aws-N-YOUR-REGION.pooler.supabase.com:5432/postgres" \
-  SUPABASE_JWKS_URL="https://<ref>.supabase.co/auth/v1/.well-known/jwks.json" \
-  SUPABASE_JWT_ISSUER="https://<ref>.supabase.co/auth/v1"
+
+Later rotations add a version rather than replacing the secret:
+
+```bash
+printf '%s' '<new url>' | gcloud secrets versions add masseberegning-db-url --data-file=-
+```
+
+The two non-secret values go in `env.cloudrun.yaml`:
+
+```yaml
+SUPABASE_JWKS_URL: 'https://<ref>.supabase.co/auth/v1/.well-known/jwks.json'
+SUPABASE_JWT_ISSUER: 'https://<ref>.supabase.co/auth/v1'
 ```
 
 **GitHub repository variables** — *Settings → Secrets and variables → Actions
@@ -307,7 +324,7 @@ fly secrets set \
 
 | Variable | Value |
 |---|---|
-| `API_BASE` | `https://masseberegning-api.fly.dev` |
+| `API_BASE` | the Cloud Run service URL, no trailing slash |
 | `SUPABASE_URL` | `https://<ref>.supabase.co` |
 | `SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_…` |
 
@@ -380,11 +397,11 @@ optional — Google and Microsoft cover most people.
 | Google error **`redirect_uri_mismatch`** | The authorised redirect URI in Google Cloud must be the **Supabase** callback (`https://<ref>.supabase.co/auth/v1/callback`), not our site. |
 | Sign-in returns to an error page or blank screen | The URL is not in §6's redirect list. Test the pattern with the dashboard's tester. |
 | Google says the app is not verified, or "access blocked" | Consent screen is in *Testing* and the account is not a listed test user. Add them, or publish. |
-| API returns 401 **"Ugyldig innlogging"** with a valid session | `SUPABASE_JWT_ISSUER` does not match the token's `iss`, or the JWKS rotation in §4 never happened. `fly logs` shows the rejection reason. |
+| API returns 401 **"Ugyldig innlogging"** with a valid session | `SUPABASE_JWT_ISSUER` does not match the token's `iss`, or the JWKS rotation in §4 never happened. `gcloud run services logs read masseberegning-api --region europe-north1` shows the rejection reason. |
 | API returns 401 **"Innloggingen er utløpt"** immediately | Clock skew, or a token minted before a key rotation. Sign out and in again. |
 | Browser console shows a **CORS** error | `ALLOWED_ORIGINS` in `fly.toml` must be the bare origin `https://kongper.github.io` — no path, no trailing slash. |
 | `/healthz` reports `"db":"error"` | Connection string. Wrong password, an unencoded special character in it, or the IPv6-only direct connection instead of the session pooler. |
-| App refuses to start at all | Deliberate: it will not run with an incomplete configuration. `fly logs` names exactly which variable is missing. |
+| App refuses to start at all | Deliberate: it will not run with an incomplete configuration. the Cloud Run logs name exactly which variable is missing. |
 | Invitation link says **"ugyldig eller ikke lenger gyldig"** | One generic message covers unknown, expired, revoked and used-up — by design, so a bad token reveals nothing. Check the invitation's row in **Administrasjon**. |
 
 ### Reading your own token
@@ -398,5 +415,5 @@ JSON.parse(atob(JSON.parse(localStorage['mb.session']).access_token.split('.')[1
 
 You get the claims the API sees. Check `iss` matches `SUPABASE_JWT_ISSUER`
 exactly, `aud` is `authenticated`, `email` is the address you expect, and `exp`
-is in the future. A mismatch between `iss` here and the Fly secret explains
+is in the future. A mismatch between `iss` here and `SUPABASE_JWT_ISSUER` explains
 most otherwise-baffling 401s.

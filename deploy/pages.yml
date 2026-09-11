@@ -8,7 +8,7 @@ name: Publish frontend to GitHub Pages
 # committed to the repo.
 #
 # Set these once under Settings > Secrets and variables > Actions > Variables:
-#   API_BASE                  https://masseberegning-api.fly.dev
+#   API_BASE                  the Cloud Run service URL, no trailing slash
 #   SUPABASE_URL              https://<ref>.supabase.co
 #   SUPABASE_PUBLISHABLE_KEY  the "sb_publishable_..." key (public by design)
 #

@@ -8,8 +8,8 @@ mistake surfaces at the step that caused it rather than three steps later.
 | | |
 |---|---|
 | UI | `https://kongper.github.io/Masseberegning/` |
-| API | `https://masseberegning-api.fly.dev` |
-| Repo | `https://github.com/kongper/masseberegning` (private) |
+| API | `https://masseberegning-api-<hash>.europe-north1.run.app` (Cloud Run) |
+| Repo | `https://github.com/kongper/Masseberegning` (public — Pages needs Pro for a private repo) |
 | Database + sign-in | Supabase (EU region) |
 
 Registration is invite-only. Anyone may sign in with Google, Microsoft or an
@@ -42,8 +42,8 @@ It installs the two CI workflows into `.github/workflows/`, makes the folder a
 git repository, and commits. It does not talk to GitHub and does not push.
 
 > The `api.yml` and `pages.yml` sitting in your `Claude outputs` folder are an
-> earlier Azure-targeted version. Ignore them — `setup.py` installs the Fly.io
-> ones. `Claude outputs/` is gitignored.
+> earlier Azure-targeted version. Ignore them — `setup.py` installs the
+> current Cloud Run ones. `Claude outputs/` is gitignored.
 
 Then create the repo and push. With the GitHub CLI:
 
@@ -76,9 +76,9 @@ Work through it to the end of section 7 and come back with five values:
 |---|---|---|
 | 1 | Project URL | GitHub variable `SUPABASE_URL` |
 | 2 | Publishable key (`sb_publishable_…`) | GitHub variable `SUPABASE_PUBLISHABLE_KEY` |
-| 3 | Session-pooler connection string | Fly secret `DATABASE_URL` |
-| 4 | JWKS URL | Fly secret `SUPABASE_JWKS_URL` |
-| 5 | Issuer | Fly secret `SUPABASE_JWT_ISSUER` |
+| 3 | Session-pooler connection string | Secret Manager `masseberegning-db-url` |
+| 4 | JWKS URL | `env.cloudrun.yaml` -> `SUPABASE_JWKS_URL` |
+| 5 | Issuer | `env.cloudrun.yaml` -> `SUPABASE_JWT_ISSUER` |
 
 Three things there are easy to get wrong and unpleasant to debug:
 
@@ -102,89 +102,207 @@ Look for `"google": true` under `external`.
 
 ---
 
-## 3. Fly.io
+## 3. Google Cloud Run
+
+The API used to run on Fly.io. It moved on 2026-09-11, when the Fly trial
+credit ended and the app was parked with
 
 ```
-# install flyctl, then
-fly auth signup        # or: fly auth login
+failed to list active VMs: trial has ended, please add a credit card
 ```
 
-The app name in `fly.toml` is `masseberegning-api`. Fly app names are globally
-unique, so if it is taken, change the `app =` line and remember the new
-hostname.
+Cloud Run was chosen for its **permanent** free allowance — 180 000 vCPU-s,
+360 000 GiB-s and 2 M requests per billing account per month, which at 1 vCPU /
+2 GiB works out to 50 hours of request-processing time, or roughly 9 000
+calculations. Fly's realistic bill for this app was under a dollar a month, so
+the win is the shape of the bill, not its size: this version stays at zero
+without anyone maintaining a payment relationship. `claude/cloud-run-migration.md`
+in the Claude project has the full cost working.
 
-Create the app **without deploying**, so it does not start before it has any
-configuration:
+Region **`europe-north1`** (Finland): a Tier 1 region, inside the EEA, closest
+to Norway. A billing account with a card is still required — the free tier is
+per billing account, not per project — but nothing here bills against it at
+this volume.
 
-```
-fly launch --no-deploy --copy-config --name masseberegning-api --region arn
-```
+### 3.1 One-time setup
 
-Then set the three secrets — the values that either carry a password or reveal
-the Supabase project ref. Everything else is already in `fly.toml` under
-`[env]`, where it is version-controlled and visible.
+Roughly an hour, most of it clicking. Set `PROJECT` once and paste the rest.
 
-> **Copy this string from the dashboard's Connect button rather than from
-> here.** Three parts of it are specific to your project and none of them can
-> be guessed:
->
-> - the **region** in the hostname (`aws-1-eu-west-1`, `aws-1-eu-north-1`, …) —
->   it is wherever the project was created, and a wrong region still resolves
->   and still answers, so the failure looks like a credentials problem
-> - the **project ref** in the username, which is `postgres.` + the ref;
->   leaving the placeholder gives
->   `FATAL: (ENOTFOUND) tenant/user postgres.<ref> not found`, which also reads
->   like a permissions problem and is not one
-> - the **password**, percent-encoded if it contains `@ / : #`
->
-> The Connect dialog fills in the first two for you and leaves only the
-> password to replace.
+```bash
+PROJECT=masseberegning          # or your own; must be globally unique
+REGION=europe-north1
 
-```
-fly secrets set \
-  DATABASE_URL="postgresql://postgres.<ref>:<password>@aws-N-YOUR-REGION.pooler.supabase.com:5432/postgres" \
-  SUPABASE_JWKS_URL="https://<ref>.supabase.co/auth/v1/.well-known/jwks.json" \
-  SUPABASE_JWT_ISSUER="https://<ref>.supabase.co/auth/v1"
+gcloud projects create "$PROJECT"
+gcloud config set project "$PROJECT"
+# Link billing in the console (Billing -> Link a billing account) - the free
+# tier is per billing account and a project without one cannot deploy.
+
+gcloud services enable \
+  run.googleapis.com \
+  artifactregistry.googleapis.com \
+  secretmanager.googleapis.com \
+  iamcredentials.googleapis.com
 ```
 
-Deploy, then pin it to one machine:
+**Set a budget alert at €1 before anything else.** The free tier has no hard
+cap; an alert is the only thing between a runaway loop and a surprise.
+*Billing → Budgets & alerts → Create budget.*
 
-```
-fly deploy
-fly scale count 1
-fly status
+Container registry, in the same region as the service so the pull is free:
+
+```bash
+gcloud artifacts repositories create masseberegning \
+  --repository-format=docker --location="$REGION" \
+  --description="Masseberegning API images"
+
+# The free storage allowance is 0.5 GiB and this image is larger than that on
+# its own, so keep only the newest few versions.
+gcloud artifacts repositories set-cleanup-policies masseberegning \
+  --location="$REGION" --policy=- <<'EOF'
+[{"name":"keep-3-newest","action":{"type":"Keep"},"mostRecentVersions":{"keepCount":3}}]
+EOF
 ```
 
-**`fly scale count 1` is not optional.** `fly launch` may create two machines
-for high availability. Job output — the overlay PNGs, the GeoTIFF, the CSV — is
-written to the machine's own filesystem and read back through
-`/api/jobb/{id}/{name}`, so a second machine serves 404s for the first one's
-downloads. The deploy workflow asserts the count and fails if it is not 1.
-Raising it needs blob storage first; `storage.py` is the seam.
+The one secret. **Copy the connection string from the Supabase dashboard's
+Connect button**, not from here — the same three project-specific parts as
+before (region in the hostname, `postgres.<ref>` as the username, the
+password), and the same misleading failures if any of them is guessed. Session
+pooler, IPv4, port 5432:
+
+```bash
+printf '%s' 'postgresql://postgres.<ref>:<password>@aws-N-YOUR-REGION.pooler.supabase.com:5432/postgres' \
+  | gcloud secrets create masseberegning-db-url --data-file=-
+```
+
+Six active secret versions are free, so rotating the password later costs
+nothing:
+
+```bash
+printf '%s' '<new url>' | gcloud secrets versions add masseberegning-db-url --data-file=-
+```
+
+### 3.2 Deploy identity, without a downloadable key
+
+```bash
+PROJECT_NUM=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
+SA=masseberegning-deploy@"$PROJECT".iam.gserviceaccount.com
+
+gcloud iam service-accounts create masseberegning-deploy \
+  --display-name="GitHub Actions deployer"
+
+for role in roles/run.admin roles/iam.serviceAccountUser roles/artifactregistry.writer; do
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:$SA" --role="$role" --condition=None
+done
+
+# Scoped to the one secret rather than project-wide.
+gcloud secrets add-iam-policy-binding masseberegning-db-url \
+  --member="serviceAccount:$SA" --role=roles/secretmanager.secretAccessor
+```
+
+Then Workload Identity Federation, so no JSON key ever lands in a repository
+secret. A downloaded key in `secrets.GCP_SA_KEY` also works and is quicker —
+it is also a long-lived credential in a public repo's settings, which is the
+reason not to:
+
+```bash
+gcloud iam workload-identity-pools create github \
+  --location=global --display-name="GitHub"
+
+gcloud iam workload-identity-pools providers create-oidc github \
+  --location=global --workload-identity-pool=github \
+  --display-name="GitHub OIDC" \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+  --attribute-condition="assertion.repository == 'kongper/Masseberegning'"
+
+gcloud iam service-accounts add-iam-policy-binding "$SA" \
+  --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUM/locations/global/workloadIdentityPools/github/attributes/repository/kongper/Masseberegning"
+
+echo "GCP_PROJECT      = $PROJECT"
+echo "GCP_DEPLOY_SA    = $SA"
+echo "GCP_WIF_PROVIDER = projects/$PROJECT_NUM/locations/global/workloadIdentityPools/github/providers/github"
+```
+
+> **`--attribute-condition` is not optional.** Without it the pool will mint a
+> token for *any* GitHub repository on the internet that asks, and that token
+> can deploy to your project. The condition pins it to this repo.
+
+Put those three printed values in the repo as **variables** (not secrets):
+*Settings → Secrets and variables → Actions → Variables* —
+`GCP_PROJECT`, `GCP_DEPLOY_SA`, `GCP_WIF_PROVIDER`. They are identifiers, not
+credentials.
+
+### 3.3 The deploy itself
+
+`.github/workflows/api.yml` does it on every push to `main`: build, push to
+Artifact Registry, `gcloud run deploy`, then verify `/healthz` and `/readyz`.
+Everything non-secret is in **`env.cloudrun.yaml`**, committed, which replaces
+what used to be `fly.toml`'s `[env]` block.
+
+To deploy by hand the first time, or from a machine, from the repo root:
+
+```bash
+IMAGE="$REGION-docker.pkg.dev/$PROJECT/masseberegning/api"
+gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+docker build --platform linux/amd64 -t "$IMAGE:manual" .
+docker push "$IMAGE:manual"
+
+gcloud run deploy masseberegning-api \
+  --image "$IMAGE:manual" --region "$REGION" --allow-unauthenticated \
+  --cpu 1 --memory 2Gi --min-instances 0 --max-instances 1 \
+  --concurrency 8 --timeout 180 \
+  --startup-probe httpGet.path=/healthz,initialDelaySeconds=10,periodSeconds=5,failureThreshold=12,timeoutSeconds=4 \
+  --set-secrets DATABASE_URL=masseberegning-db-url:latest \
+  --env-vars-file env.cloudrun.yaml
+```
+
+Four of those flags carry reasoning that is expensive to rediscover, and the
+workflow repeats it in comments:
+
+- **`--max-instances 1`** is the one-machine invariant inherited from Fly. Job
+  output is written to the instance's filesystem and read back through
+  `/api/jobb/{id}/{name}`, so a second instance serves 404s for the first one's
+  downloads. Raising it needs blob storage first; `storage.py` is the seam.
+- **`--startup-probe` on `/healthz`, never `/readyz`.** `/healthz` is liveness
+  only and touches nothing outside the process. A database-backed probe fails a
+  cold start, which takes the whole revision down and returns the platform's
+  bodiless 503 — which browsers report as a CORS error. Twelve failures × 5 s
+  is a 60-second budget for importing rasterio and pyproj.
+- **No `--no-cpu-throttling`.** It looks like the fix for idle connections, but
+  it switches the service to instance-based billing where an idle instance is
+  charged for its whole lifetime, and the free allowance stops covering the
+  month. The `check=check_connection` argument in `db.py` is the actual fix,
+  and `test_pool.py` proves it.
+- **`--concurrency 8`**, not the default 80, which would let eighty CPU-bound
+  calculations pile onto one vCPU.
 
 **Check:**
 
-```
-curl https://masseberegning-api.fly.dev/healthz
-```
-
-Expect `{"status":"ok", ..., "db":"ok"}`. The app creates its own tables on
-startup, so `"db":"ok"` means the migrations ran.
-
-If it says `"status":"degraded"` with a database error, the connection string
-is wrong — `fly logs` will show it. If the app refuses to start at all, read the
-message: it deliberately refuses an incomplete configuration rather than coming
-up half-working, and it names exactly what is missing.
-
-Finally, the deploy token for CI:
-
-```
-fly tokens create deploy -x 999999h
+```bash
+URL=$(gcloud run services describe masseberegning-api --region "$REGION" --format='value(status.url)')
+curl -s "$URL/healthz"     # {"status":"ok",...}
+curl -s "$URL/readyz"      # {"status":"ready",...} - migrations ran
 ```
 
-Copy the **whole** value, including the `FlyV1` prefix, into the repo:
-**Settings → Secrets and variables → Actions → Secrets → New repository
-secret**, named `FLY_API_TOKEN`.
+`/readyz` not ready is almost always the pooler hostname or the password in
+Secret Manager. `gcloud run services logs read masseberegning-api --region "$REGION" --limit 50`
+shows the real error; the app names what is wrong rather than coming up
+half-working.
+
+Then the check that no unit test can do — **idle, then twice**:
+
+```bash
+sleep 1200
+curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' "$URL/readyz"   # cold start
+curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' "$URL/readyz"   # warm
+```
+
+The first proves the cold start fits inside the startup probe; the second
+proves the connection-pool fix survives a frozen instance. This is the pair
+that would otherwise fail in front of a user, on whichever endpoint they
+happened to open first.
 
 ---
 
@@ -196,7 +314,7 @@ secret**, named `FLY_API_TOKEN`.
 
 | Variable | Value |
 |---|---|
-| `API_BASE` | `https://masseberegning-api.fly.dev` |
+| `API_BASE` | the Cloud Run service URL, no trailing slash — `gcloud run services describe masseberegning-api --region europe-north1 --format='value(status.url)'` |
 | `SUPABASE_URL` | `https://<ref>.supabase.co` |
 | `SUPABASE_PUBLISHABLE_KEY` | the `sb_publishable_…` key (Project Settings → API Keys) |
 
@@ -221,7 +339,7 @@ Sign in with Google as `per@prosit.no`.
 
 You land straight in the app, with **superadmin** next to your address in the
 bottom-left corner and an **Administrasjon** link. No invitation needed:
-`SUPERADMIN_EMAILS` in `fly.toml` is checked on every sign-in, which is what
+`SUPERADMIN_EMAILS` in `env.cloudrun.yaml` is checked on every sign-in, which is what
 makes this work against an empty database.
 
 **Leave that setting in place permanently.** It is the only way back in if the
@@ -293,15 +411,25 @@ elevation data that is an acceptable trade — but it is a decision, not an
 oversight, and it is the thing to revisit if the outputs ever become
 confidential.
 
-**Cold starts.** `min_machines_running = 0` means the machine stops when idle,
-and the first request afterwards has to re-import rasterio and pyproj — a few
-seconds. Set it to 1 in `fly.toml` to trade a little cost for always-warm.
+**Cold starts are worse on Cloud Run than they were on Fly.** Fly's proxy held
+the request while a suspended machine resumed; Cloud Run starts a container
+from cold, and this image imports rasterio, pyproj and shapely before uvicorn
+binds. Expect 10–20 seconds on the first request after an idle spell — which
+users read as "the app is slow" the first time each morning.
+`--min-instances 1` fixes it and costs the free tier entirely (an always-on
+instance burns about 2.6 M GiB-seconds a month against a 360 k allowance), so
+don't, unless someone complains — and then price it first.
 
-**Set a spend limit** on both Fly and Supabase. Both scale to near-nothing at
-idle, but neither caps spending by default.
+**Set a budget alert** on the Google billing account and a spend limit on
+Supabase. Cloud Run's free tier has no hard cap: exceeding it bills rather
+than throttles, and the only line that grows with real use is egress (overlay
+PNGs and GeoTIFFs, around $0.10/GiB from `europe-north1` — the free egress
+allowance is North America only).
 
-**Rate limits are per machine.** `ratelimit.py` is in-process. At one machine
-the numbers are exact; scaled out, the effective limit is `limit × machines`.
+**Rate limits are per instance.** `ratelimit.py` is in-process. At
+`--max-instances 1` the numbers are exact; scaled out, the effective limit is
+`limit × instances`. That cannot happen before job output moves to blob
+storage anyway — the two constraints are the same constraint.
 
 **The invite token leaks through `Referer` if you touch the URL handling.** The
 token arrives as `?invitasjon=…`, so without care every Kartverket tile request

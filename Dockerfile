@@ -63,12 +63,24 @@ RUN python -c "import app; print('app imports OK')"
 # useful for smoke-testing the container before pointing Pages at it.
 COPY static/ ./static/
 
-# Job output. Mount a volume here if you want jobs to survive a restart;
-# otherwise they expire with the container, which the TTL already assumes.
-ENV JOB_ROOT=/var/lib/masseberegning/jobs
-RUN mkdir -p /var/lib/masseberegning/jobs && \
-    useradd --create-home --uid 10001 app && \
-    chown -R app:app /var/lib/masseberegning
+# Job output: overlay PNGs, the GeoTIFF and the CSV, read back by
+# /api/jobb/{id}/{name} and expired by their mtime.
+#
+# /tmp, not /var/lib/..., because Cloud Run's first-generation execution
+# environment makes only /tmp writable. Second generation makes the whole
+# filesystem writable, but on BOTH generations every write goes into memory and
+# counts against the memory limit - there is no disk. /tmp works on both, so
+# use it and stay off that decision entirely.
+#
+# The memory accounting is why JOB_TTL_MINUTES is set low in production: a job
+# is tens of megabytes and it now shares the instance's RAM with a 64 MB DEM
+# and a 128 MB difference array. storage.cleanup() runs on every new job.
+#
+# storage.init() creates the root itself, so there is nothing to mkdir here -
+# which is just as well, since /tmp on Cloud Run is a fresh tmpfs at runtime
+# and anything built into the image at that path would be invisible anyway.
+ENV JOB_ROOT=/tmp/mb-jobs
+RUN useradd --create-home --uid 10001 app
 USER app
 
 EXPOSE 8000

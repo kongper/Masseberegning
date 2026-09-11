@@ -135,7 +135,7 @@ def init_repo() -> bool:
     say(f"    staged {len(staged)} files")
     run("git", "commit", "-m",
         "Masseberegning: invite-only auth, split deployment\n\n"
-        "Static frontend for GitHub Pages, FastAPI container for Fly.io,\n"
+        "Static frontend for GitHub Pages, FastAPI container on Cloud Run,\n"
         "Supabase Auth for sign-in and Postgres for membership.\n"
         "LOCAL_SINGLE_USER=1 preserves the original local workflow.")
     say("    committed")

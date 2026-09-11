@@ -1,6 +1,6 @@
 # Masseberegning — as built
 
-Written 2026-09-09, updated 2026-09-10. Records what was actually implemented
+Written 2026-09-09, updated 2026-09-11. Records what was actually implemented
 against `claude/deployment-and-auth-plan.md` and
 `claude/invitation-link-design.md`, and where the code deviates from those
 designs.
@@ -11,15 +11,26 @@ designs.
 |---|---|
 | Repo | `github.com/kongper/Masseberegning`, personal account, **public** |
 | UI | GitHub Pages at `https://kongper.github.io/Masseberegning/` |
-| API | Fly.io, app `masseberegning-api`, region `arn` (Stockholm), one machine |
+| API | Google Cloud Run, `masseberegning-api`, `europe-north1` (Finland), one instance |
 | Database + sign-in | Supabase, EU region, Google sign-in |
 | Hostnames | platform defaults; `prosit.no` subdomains deferred |
 
-Fly.io was chosen over Azure Container Apps and Cloud Run because there is no
-existing Azure or GCP account, so the deciding factor was time-to-running
-rather than tenant alignment. `storage.py` and the deploy workflow both hold
-the app to **one machine**, because job output lives on the machine's
-filesystem.
+**The API ran on Fly.io until 2026-09-11**, when the trial credit ended and the
+app was parked (`failed to list active VMs: trial has ended`). It moved to
+Cloud Run the same day, for the permanent free allowance — 50 hours of
+request-processing time a month at 1 vCPU / 2 GiB, which is roughly 9 000
+calculations. Fly's realistic bill had been under a dollar a month, so the win
+is the shape of the bill rather than its size: this version stays at zero with
+no payment relationship to maintain. `claude/cloud-run-migration.md` has the
+cost working and the cutover order.
+
+Fly had been chosen originally because there was no existing Azure or GCP
+account, so the deciding factor was time-to-running rather than tenant
+alignment. That reasoning held for exactly one requirement.
+
+`storage.py` and the deploy workflow both hold the app to **one instance**
+(`--max-instances 1`), because job output lives on the instance's filesystem —
+on Cloud Run, in `/tmp`, which is memory rather than disk.
 
 The repo is public because GitHub Pages on a private repo requires GitHub Pro.
 Nothing secret is in the repo: `config.js` is generated at deploy time from
@@ -33,8 +44,8 @@ publishable key, both of which are public by design.
 **Paths on GitHub Pages are case-sensitive.** The repo is `Masseberegning`, so
 the site is `/Masseberegning/`, and `/masseberegning/` is a 404. The API kept
 working the whole time this was wrong, because `ALLOWED_ORIGINS` is
-origin-only — only the invitation links broke. `FRONTEND_URL` in `fly.toml`
-carries the capital M and a comment saying why.
+origin-only — only the invitation links broke. `FRONTEND_URL` in
+`env.cloudrun.yaml` carries the capital M and a comment saying why.
 
 **The Supabase pooler hostname contains your project's own region.** It is
 `aws-N-<region>.pooler.supabase.com` and must be copy-pasted from the Supabase
@@ -43,9 +54,10 @@ the database password. `README-DEPLOY.md` now warns about all three by name.
 
 **rasterio's wheels are not self-contained.** They need `libexpat1` and
 `libstdc++6` from the base image. Without them the container starts, fails at
-`import rasterio` with `ImportError: libexpat.so.1`, and Fly answers every
-request with a bodiless 503 — which the browser reports as a CORS error, so
-the symptom points at the wrong thing entirely. The `Dockerfile` installs both
+`import rasterio` with `ImportError: libexpat.so.1`, and the platform answers
+every request with a bodiless 503 — which the browser reports as a CORS error,
+so the symptom points at the wrong thing entirely. True of Fly and of Cloud Run
+alike; the lesson transferred with the app. The `Dockerfile` installs both
 and then *imports the geospatial stack at build time*, so a missing system
 library fails the build instead of the deployment.
 
@@ -58,8 +70,10 @@ Backend: `config.py`, `db.py`, `auth.py`, `invites.py`, `calculations.py`,
 `002_invite_link_and_domain.sql`, `003_calculations.sql`. Frontend:
 `static/auth.js`, `auth.css`, `config.js`, `admin.html`, `admin.js`, plus the
 saved-calculations UI in `index.html` / `main.js` / `style.css`. Also
-`Dockerfile`, two GitHub Actions workflows, `.env.example`,
-`README-DEPLOY.md`, `README-SUPABASE.md`, `BRANDING.md`.
+`Dockerfile`, `env.cloudrun.yaml`, two GitHub Actions workflows,
+`.env.example`, `README-DEPLOY.md`, `README-SUPABASE.md`, `BRANDING.md`.
+`fly.toml` is gone; the three comments in it that were worth keeping moved into
+`deploy/api.yml` and `env.cloudrun.yaml`.
 
 Migrations run at startup and are idempotent — verified by running the whole
 set twice against a real database. Postgres has no
@@ -69,7 +83,7 @@ set twice against a real database. Postgres has no
 
 | Suite | Result |
 |---|---|
-| `pytest test_invites.py test_auth.py test_calculations.py` | 117 passed, no network, real PostgreSQL 16 |
+| `pytest test_invites.py test_auth.py test_calculations.py test_pool.py` | 120 passed, no network, real PostgreSQL 16 |
 | `python test_gate.py` | 73 browser checks (Chromium, API stubbed) |
 | `python test_render.py` | all rendering checks pass |
 | `python test_ui.py` | full real-data run against live Kartverket: 534 278 m³ cut / 485 707 m³ fill, net 0 at the balanced level; overlays, GeoTIFF and CSV all served |
@@ -225,8 +239,9 @@ recommends the **session** pooler (IPv4, port 5432, username
 
 **`DEM_CACHE_MB`, previously hardcoded at 256.** A 2 GB Fly machine cannot
 afford a 256 MB cache on top of a calculation's working set — a 16 Mpx DEM is
-64 MB at float32 and the difference array is 128 MB at float64. `fly.toml` sets
-96.
+64 MB at float32 and the difference array is 128 MB at float64. On Cloud Run,
+where job files are written into memory rather than onto a disk,
+`env.cloudrun.yaml` sets 64 and shortens `JOB_TTL_MINUTES` to 45.
 
 **`setup.py`.** Installs the two CI workflows into `.github/workflows/` and does
 the git init/commit. The workflows are authored under `deploy/`, which is
@@ -235,6 +250,56 @@ write into `.github/` — GitHub Actions files are protected. An earlier version
 moved them out and deleted `deploy/`, which meant a corrected workflow could
 not report itself as newer than the installed one; that is why the sync now
 prints `UPDATED`.
+
+## The move to Cloud Run (2026-09-11)
+
+Four repo changes, and only one of them is application code.
+
+**`db.py`: `check=ConnectionPool.check_connection, max_idle=60.0`.** This is
+the one that matters. Cloud Run allocates CPU only while a request is being
+served, so between requests the container is frozen: the pool's maintenance
+thread does not run, while Supabase's pooler goes on closing idle connections
+at the other end. Without a check on checkout, the first query after an idle
+spell hands application code a dead socket — intermittently, in production, on
+whichever endpoint the user happened to open first. `test_pool.py` reproduces
+it with `pg_terminate_backend` and fails without the fix, which was verified by
+removing the fix and watching it fail.
+
+The tempting alternative, `--no-cpu-throttling`, switches the service to
+instance-based billing where an idle instance is charged for its whole
+lifetime — which is exactly the bill the move was meant to avoid.
+
+**`Dockerfile`: `JOB_ROOT=/tmp/mb-jobs`.** Only `/tmp` is writable on Cloud
+Run's first-generation execution environment, and on *both* generations every
+write goes into memory and counts against the memory limit. So job files now
+share the 2 GiB with the DEM cache and a calculation's working set, which is
+why `DEM_CACHE_MB` dropped to 64 and `JOB_TTL_MINUTES` to 45.
+
+**`deploy/api.yml`: build, push to Artifact Registry, `gcloud run deploy`.**
+Built in Actions rather than with `--source`, because the repo is public so
+Actions minutes are free and it keeps Cloud Build out of the picture. Keyless
+auth via Workload Identity Federation, pinned with an `--attribute-condition`
+to this one repository — without that condition the pool will mint a token for
+any repository on the internet that asks.
+
+**`env.cloudrun.yaml` replaces `fly.toml`'s `[env]`.** Committed, because
+configuration that is not a credential belongs where it can be reviewed. The
+JWKS URL and issuer moved out of secret storage in the process: they contain
+the Supabase project ref, which is already published in `config.js` for the
+browser to sign in with, so keeping them secret hid the API's configuration for
+no security gain. The database URL is the only real secret and lives in Secret
+Manager.
+
+What the move does *not* change: the frontend, Pages, Supabase, every redirect
+URL, `ALLOWED_ORIGINS`, `FRONTEND_URL`, and the rest of the application.
+
+Known regression: **cold starts are worse.** Fly's proxy held the request while
+a suspended machine resumed; Cloud Run starts a container from cold, and this
+image imports rasterio, pyproj and shapely before uvicorn binds — 10–20 seconds
+on the first request after idleness. `--min-instances 1` fixes it and costs the
+whole free allowance, so it stays at 0 until someone complains.
+
+---
 
 ## Still open
 

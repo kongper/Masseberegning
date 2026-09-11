@@ -12,7 +12,7 @@
 window.MB_CONFIG = {
   /* Empty string means "same origin", which is what local development uses.
    * In production this is the API's own hostname, e.g.
-   * "https://masseberegning-api.fly.dev" (no trailing slash). */
+   * "https://masseberegning-api-abc123-xy.a.run.app" (no trailing slash). */
   apiBase: '',
 
   /* Supabase project URL, e.g. "https://abcdefgh.supabase.co" */

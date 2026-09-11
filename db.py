@@ -47,12 +47,38 @@ _RETRY_AFTER = 20.0
 # --------------------------------------------------------------------- pool
 
 
-def init_pool(database_url: str, *, min_size: int = 1, max_size: int = 8,
+def init_pool(database_url: str, *, min_size: int = 1, max_size: int = 2,
               required: bool = True) -> ConnectionPool | None:
     """Open the pool. With required=False, log and return None on failure.
 
     The caller can then start anyway and let `ensure_pool` retry in the
     background, so a database that comes back does not need a redeploy.
+
+    max_size is deliberately small - 2, not the 8 it used to be - and the
+    reason is measured rather than assumed. See the `check` argument in
+    `_open_pool`: when the far end has closed every pooled connection (which is
+    the normal state after an idle Cloud Run instance is unfrozen), the pool
+    discovers each dead one in turn and sleeps between checks with exponential
+    backoff - 1s, then 2s, then 4s. Timed against a real PostgreSQL with every
+    backend terminated:
+
+        stale connections in the pool     time for the next request
+        1                                 0.01 s
+        2                                 1.0 s
+        3                                 2.9 s
+        4                                 6.4 s
+        8                                 PoolTimeout after 30 s
+
+    So a pool that has grown turns a stale-socket problem into an outage, and
+    capping it at 2 bounds the worst case to about a second - noise next to the
+    10-20 second cold start of this image, and next to the multi-second
+    Kartverket fetch that dominates every calculation.
+
+    Two connections is not tight for this workload: every query here is a
+    sub-millisecond primary-key lookup, there are no long transactions outside
+    the startup migration, and the service runs at --concurrency 8 on one
+    instance. Raising this is a decision to re-measure the table above, not a
+    free performance win. test_pool.py holds the line.
     """
     global _pool, _url, _sizes, last_error, _last_attempt
     _url, _sizes = database_url, (min_size, max_size)
@@ -124,6 +150,30 @@ def _open_pool(database_url: str, min_size: int, max_size: int) -> ConnectionPoo
             # every diagnosis costs the full 15 seconds.
             "connect_timeout": 8,
         },
+        # Hand out only connections that are known to be alive.
+        #
+        # Cloud Run allocates CPU to an instance only while it is handling a
+        # request. Between requests the container is frozen: the pool's
+        # background maintenance thread does not run, while Supabase's pooler
+        # goes on closing idle connections at the other end. Without a check on
+        # checkout, the first query after an idle spell hands application code
+        # a dead socket - intermittently, in production, on whichever endpoint
+        # the user happens to hit first after a quiet hour.
+        #
+        # One "SELECT 1" per checkout is nothing next to a multi-second
+        # Kartverket fetch. Correct on any host; necessary on this one.
+        #
+        # It is not free, though: on a failed check the pool sleeps with
+        # exponential backoff before trying the next connection, so the cost
+        # scales with how many stale connections it is holding. That is why
+        # max_size defaults to 2 - see the measured table in init_pool.
+        check=ConnectionPool.check_connection,
+        # Retire a connection before the far end does it for us. Worth setting
+        # on any host, but do not count on it here: the maintenance thread that
+        # enforces it does not run while Cloud Run has the instance frozen,
+        # which is exactly when connections go stale. `check` is what actually
+        # saves the request; this only narrows the window.
+        max_idle=60.0,
         open=True,
     )
     try:
