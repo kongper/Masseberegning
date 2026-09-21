@@ -72,7 +72,29 @@ primary_region = 'arn'          # Stockholm: closest Fly region to Norway, insid
   # of a calculation rather than sharing it.
   DEM_CACHE_MB = '96'
 
-  JOB_ROOT = '/var/lib/masseberegning/jobs'
+  # MUST match the Dockerfile's default, and the Dockerfile says /tmp/mb-jobs.
+  #
+  # This line said '/var/lib/masseberegning/jobs' when fly.toml was restored on
+  # 2026-09-21, which is what the file held before it was deleted. That was
+  # wrong, because the Dockerfile had moved on in the meantime: the Cloud Run
+  # work replaced `mkdir -p /var/lib/masseberegning/jobs && chown app:app` with
+  # `ENV JOB_ROOT=/tmp/mb-jobs` and nothing else, since storage.init() creates
+  # its own root. The container still runs as the non-root `app` user, so
+  # pointing it back at /var/lib gave
+  #
+  #   PermissionError: [Errno 13] Permission denied: '/var/lib/masseberegning'
+  #
+  # at lifespan startup - uvicorn exited, the machine rebooted, and Fly
+  # answered every request with "could not find a good candidate". A config
+  # file restored from history has to be checked against the code as it is
+  # now, not as it was when the file was written.
+  #
+  # /tmp is fine here: a Fly Machine's rootfs is a real filesystem, so job
+  # files sit on disk and do not compete with the DEM cache for RAM. That is
+  # the difference from Cloud Run, where /tmp is memory - and why 96 MB of
+  # cache and a two-hour TTL are affordable on Fly but were cut to 64 and 45
+  # in env.cloudrun.yaml.
+  JOB_ROOT = '/tmp/mb-jobs'
   JOB_TTL_MINUTES = '120'
 
   MAX_AREA_M2 = '10000000'       # 10 km2

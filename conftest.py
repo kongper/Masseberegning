@@ -37,24 +37,46 @@ os.environ["CALC_PER_MINUTE"] = "3"
 os.environ["REDEEM_PER_HOUR"] = "1000"
 
 
-def _database_available() -> bool:
+def _database_available() -> tuple[bool, str]:
+    """(usable, why not).
+
+    The two reasons this returns False are worth telling apart, because they
+    have completely different fixes and the wrong message sends you looking in
+    the wrong place. The original version caught both in one `except
+    Exception` and reported "No test database at ...", so a virtualenv missing
+    psycopg produced a skip message about the database - and a whole suite
+    that silently tested nothing while appearing to be fine.
+    """
     try:
         import psycopg
+    except ImportError:
+        return False, (
+            "psycopg is not installed in the interpreter running pytest. "
+            "Install the dependencies into it: "
+            "`python -m pip install -r requirements.txt -r requirements-dev.txt`, "
+            "and check you are using the project's virtualenv - a bare `pytest` "
+            "may be a different Python entirely."
+        )
 
+    try:
         with psycopg.connect(TEST_DB, connect_timeout=3):
-            return True
-    except Exception:
-        return False
+            return True, ""
+    except Exception as exc:
+        return False, (
+            f"No test database at {TEST_DB} ({exc.__class__.__name__}: {exc}). "
+            "Start one with: docker run --rm -d --name mb-test -p 5433:5432 "
+            "-e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=masseberegning postgres:16"
+        )
 
 
-DB_UP = _database_available()
-needs_db = pytest.mark.skipif(not DB_UP, reason=f"No test database at {TEST_DB}")
+DB_UP, DB_SKIP_REASON = _database_available()
+needs_db = pytest.mark.skipif(not DB_UP, reason=DB_SKIP_REASON)
 
 
 @pytest.fixture(scope="session")
 def database():
     if not DB_UP:
-        pytest.skip("no test database")
+        pytest.skip(DB_SKIP_REASON)
     import db as dbmod
 
     # Room for the concurrency test to actually be concurrent.
