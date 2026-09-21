@@ -310,7 +310,25 @@
   background: #fff;
 }
 
-.admin .btn {
+/* Buttons on the admin page, and inside the gate on any page.
+ *
+ * `.gate` is listed here because the gate is a SIBLING of `.app.admin` in
+ * admin.html, not a descendant, so `.admin .btn` never matched it - and
+ * admin.html deliberately does not load style.css, where the app's own
+ * `.btn` lives. The gate therefore rendered a bare user-agent button on
+ * admin.html while looking correct on index.html: the same shared component
+ * styled differently depending on which page happened to host it. You only
+ * see it after signing out *from* the admin page, which is why it survived
+ * the browser tests.
+ *
+ * auth.css owns the gate, so it styles the gate's buttons too, from the
+ * gate's own variables rather than style.css's. On index.html `.gate .btn`
+ * now outranks style.css's `.btn` on specificity. That is intended - the
+ * gate should look the same wherever it appears - and the practical
+ * difference is a pixel of padding and a slightly heavier label.
+ */
+.admin .btn,
+.gate .btn {
   padding: 8px 14px;
   font: inherit;
   font-size: 13px;
@@ -323,16 +341,21 @@
   white-space: nowrap;
 }
 
-.admin .btn:hover { background: #f8fafc; }
-.admin .btn:disabled { opacity: .5; cursor: default; }
+.admin .btn:hover,
+.gate .btn:hover { background: #f8fafc; }
 
-.admin .btn-primary {
+.admin .btn:disabled,
+.gate .btn:disabled { opacity: .5; cursor: default; }
+
+.admin .btn-primary,
+.gate .btn-primary {
   background: var(--gate-accent);
   border-color: var(--gate-accent);
   color: #fff;
 }
 
-.admin .btn-primary:hover { background: #0b5d56; }
+.admin .btn-primary:hover,
+.gate .btn-primary:hover { background: #0b5d56; }
 
 .admin .btn-small { padding: 4px 9px; font-size: 12px; }
 
