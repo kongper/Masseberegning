@@ -1,0 +1,123 @@
+# Fly.io configuration for the Masseberegning API.
+#
+# RESTORED 2026-09-21. Commit 1546139 ("Move API from Fly.io to Cloud Run")
+# deleted this file, but the move never completed: `deploy/api.yml` was
+# rewritten for Cloud Run and never committed, `.github/workflows/api.yml` on
+# main still runs `flyctl deploy`, and `gcloud run services list
+# --region europe-north1` returns nothing. The result was an API that still
+# ran on Fly from the image deployed on 2026-09-10, with a deploy pipeline
+# that could no longer deploy it - `flyctl deploy` cannot work without this
+# file. Restoring it un-breaks that. See claude/cloud-run-migration.md for the
+# Cloud Run plan, which stays parked.
+#
+# The frontend is NOT here - it lives on GitHub Pages. This app serves
+# /api/* and /healthz only.
+#
+# ONE MACHINE ONLY. Job output (overlay PNGs, GeoTIFF, CSV) is written to this
+# machine's filesystem and read back through /api/jobb/{id}/{name}, so a second
+# machine would serve 404s for the first machine's jobs. `fly launch` may create
+# two machines for high availability; run `fly scale count 1` after the first
+# deploy and check with `fly status`. Raising this needs blob storage first -
+# storage.py is the seam for that.
+
+app = 'masseberegning-api'
+primary_region = 'arn'          # Stockholm: closest Fly region to Norway, inside the EEA
+
+[build]
+  dockerfile = 'Dockerfile'
+
+# Non-secret configuration lives here so it is version-controlled and visible.
+# Anything carrying the Supabase project ref or a password is a secret instead:
+#   fly secrets set DATABASE_URL=... SUPABASE_JWKS_URL=... SUPABASE_JWT_ISSUER=...
+# Those are already set on the app and are unchanged by this restore.
+[env]
+  HOST = '0.0.0.0'
+  PORT = '8000'
+
+  # The UI is on GitHub Pages; this process must not serve a second copy of it.
+  SERVE_STATIC = '0'
+
+  # Origins only - scheme and host, no path, no trailing slash. Comma-separated;
+  # config.py splits on commas and semicolons.
+  #
+  # TWO origins during the move to the custom domain. The Pages site answers on
+  # both hosts while DNS and the GitHub certificate settle, and a browser that
+  # loaded the old one must still be able to call the API. Once
+  # masseberegning.kongper.no is confirmed working and no outstanding
+  # invitation points at the old host, DELETE the github.io entry: a stale
+  # allowed origin is a permanently open door that nobody is watching.
+  ALLOWED_ORIGINS = 'https://masseberegning.kongper.no,https://kongper.github.io'
+
+  # Where invitation links point.
+  #
+  # With a custom domain the Pages site is served from the ROOT of that host,
+  # not from the /Masseberegning/ subpath a project site uses. That removes the
+  # case-sensitivity trap this comment used to warn about - there is no repo
+  # name in the path any more - but it introduces another: invitations issued
+  # before the cutover contain the old subpath URL and will not resolve here.
+  # Check the admin page for active invitations and reissue any that matter.
+  #
+  # The trailing slash is deliberate: the invitation URL is built by appending
+  # a query string, and without it you get "...kongper.no?invite=" rather than
+  # "...kongper.no/?invite=".
+  FRONTEND_URL = 'https://masseberegning.kongper.no/'
+
+  # Granted superadmin on sign-in, no invite needed. Keep it set: it is the way
+  # back in if the last superadmin loses their account.
+  SUPERADMIN_EMAILS = 'per@prosit.no'
+
+  SUPABASE_JWT_AUDIENCE = 'authenticated'
+
+  # Well under the 2 GB below, because the cache competes with the working set
+  # of a calculation rather than sharing it.
+  DEM_CACHE_MB = '96'
+
+  JOB_ROOT = '/var/lib/masseberegning/jobs'
+  JOB_TTL_MINUTES = '120'
+
+  MAX_AREA_M2 = '10000000'       # 10 km2
+  CALC_PER_MINUTE = '6'
+  CALC_PER_DAY = '200'
+  INVITE_DEFAULT_DAYS = '14'
+  INVITE_MAX_DAYS = '90'
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Stops the machine when idle and starts it again on the next request. A cold
+  # start re-imports rasterio and pyproj, so the first request after an idle
+  # period takes a few seconds. Set min_machines_running = 1 to trade a little
+  # cost for always-warm.
+  #
+  # This is also why Fly costs almost nothing here: a Machine is billed per
+  # second only while it is in the started state, and a stopped one is billed
+  # for its rootfs alone at $0.15/GB per 30 days.
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[http_service.checks]]
+  # /healthz is liveness ONLY - it touches nothing outside the process. It used
+  # to run a database query, which meant a cold start (machine woken from
+  # auto-stop, pool still dialling Supabase) could exceed the timeout below;
+  # the machine was then marked unhealthy, routing stopped, and every request
+  # got the platform's bodiless 503 - which the browser reports as a CORS
+  # error. Use /readyz to check the database; do not point this check at it.
+  #
+  # 45s grace because importing rasterio and pyproj on a cold shared-cpu
+  # machine is genuinely slow.
+  grace_period = '45s'
+  interval = '30s'
+  method = 'GET'
+  path = '/healthz'
+  timeout = '5s'
+
+[[vm]]
+  # 2 GB is not generous here: one calculation at the 16 Mpx ceiling holds a
+  # 64 MB float32 DEM and a 128 MB float64 difference array at the same time,
+  # on top of the DEM cache. Dropping to 1 GB risks the OOM killer on large
+  # polygons; lower DEM_CACHE_MB first if you want to try.
+  memory = '2gb'
+  cpu_kind = 'shared'
+  cpus = 1

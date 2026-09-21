@@ -33,10 +33,20 @@ from __future__ import annotations
 
 import time
 
-import psycopg
 import pytest
 
 from conftest import TEST_DB, needs_db
+
+# importorskip rather than a plain `import psycopg`.
+#
+# `pytestmark = needs_db` skips the *tests* in this file, but that happens
+# after collection - and a module-scope ImportError happens during it, which
+# aborts the entire pytest run rather than skipping one file. conftest gets
+# this right by guarding its own psycopg import in a try/except; this file did
+# not, so on a checkout whose virtualenv predates the database work,
+# `pytest test_pool.py test_auth.py test_invites.py` died with
+# "Interrupted: 1 error during collection" and ran nothing at all.
+psycopg = pytest.importorskip("psycopg")
 
 pytestmark = needs_db
 

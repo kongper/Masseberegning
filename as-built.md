@@ -1,6 +1,6 @@
 # Masseberegning — as built
 
-Written 2026-09-09, updated 2026-09-11. Records what was actually implemented
+Written 2026-09-09, updated 2026-09-21. Records what was actually implemented
 against `claude/deployment-and-auth-plan.md` and
 `claude/invitation-link-design.md`, and where the code deviates from those
 designs.
@@ -10,27 +10,50 @@ designs.
 | | |
 |---|---|
 | Repo | `github.com/kongper/Masseberegning`, personal account, **public** |
-| UI | GitHub Pages at `https://kongper.github.io/Masseberegning/` |
-| API | Google Cloud Run, `masseberegning-api`, `europe-north1` (Finland), one instance |
+| UI | GitHub Pages at `https://kongper.github.io/Masseberegning/`, moving to `masseberegning.kongper.no` |
+| API | **Fly.io**, app `masseberegning-api`, region `arn` (Stockholm), one machine, scale-to-zero |
 | Database + sign-in | Supabase, EU region, Google sign-in |
-| Hostnames | platform defaults; `prosit.no` subdomains deferred |
+| Hostnames | platform defaults; custom domain in progress — `claude/custom-domain-runbook.md` |
 
-**The API ran on Fly.io until 2026-09-11**, when the trial credit ended and the
-app was parked (`failed to list active VMs: trial has ended`). It moved to
-Cloud Run the same day, for the permanent free allowance — 50 hours of
-request-processing time a month at 1 vCPU / 2 GiB, which is roughly 9 000
-calculations. Fly's realistic bill had been under a dollar a month, so the win
-is the shape of the bill rather than its size: this version stays at zero with
-no payment relationship to maintain. `claude/cloud-run-migration.md` has the
-cost working and the cutover order.
+## The Cloud Run move that did not happen
 
-Fly had been chosen originally because there was no existing Azure or GCP
-account, so the deciding factor was time-to-running rather than tenant
-alignment. That reasoning held for exactly one requirement.
+**This section previously claimed the API moved to Cloud Run on 2026-09-11. It
+had not.** Corrected 2026-09-21 after checking the live system rather than the
+documentation:
 
-`storage.py` and the deploy workflow both hold the app to **one instance**
-(`--max-instances 1`), because job output lives on the instance's filesystem —
-on Cloud Run, in `/tmp`, which is memory rather than disk.
+- `gh variable list` → `API_BASE = https://masseberegning-api.fly.dev`, and the
+  published `config.js` agrees, so every browser calls Fly.
+- `fly status -a masseberegning-api` → the app exists, one machine in `arn`,
+  stopped and auto-starting on demand, running the image deployed on
+  2026-09-10.
+- `gcloud run services list --region europe-north1` → **no services**.
+
+What commit `1546139` ("Move API from Fly.io to Cloud Run") actually did was
+commit the *preparation* and not the move: `deploy/api.yml` was rewritten for
+Cloud Run but **never committed**, `.github/workflows/api.yml` on `main` still
+runs `flyctl deploy`, and `fly.toml` was **deleted**. Since `flyctl deploy`
+cannot run without `fly.toml`, the effect was an API still serving from its
+last good image while the pipeline that maintains it was quietly broken —
+close to the worst shape a deployment can be in, because nothing fails until
+the next time you need it to work.
+
+`fly.toml` was restored on 2026-09-21, with a header explaining why.
+`env.cloudrun.yaml` is kept but labelled NOT IN USE; nothing reads it.
+`claude/cloud-run-migration.md` stays valid as a plan, and parked.
+
+The lesson worth keeping: the trial-ended message that started all this was
+real, but Fly bills a Machine only while it is in the started state, and this
+app has `auto_stop_machines = 'stop'` with `min_machines_running = 0`. The
+realistic bill was well under a dollar a month throughout. The migration was
+answering a cost problem that scale-to-zero had already solved.
+
+Fly was chosen originally because there was no existing Azure or GCP account,
+so the deciding factor was time-to-running rather than tenant alignment. That
+reasoning still holds.
+
+`storage.py` and the deploy workflow both hold the app to **one machine**,
+because job output lives on that machine's filesystem and a second machine
+would serve 404s for the first one's jobs.
 
 The repo is public because GitHub Pages on a private repo requires GitHub Pro.
 Nothing secret is in the repo: `config.js` is generated at deploy time from
@@ -72,8 +95,8 @@ Backend: `config.py`, `db.py`, `auth.py`, `invites.py`, `calculations.py`,
 saved-calculations UI in `index.html` / `main.js` / `style.css`. Also
 `Dockerfile`, `env.cloudrun.yaml`, two GitHub Actions workflows,
 `.env.example`, `README-DEPLOY.md`, `README-SUPABASE.md`, `BRANDING.md`.
-`fly.toml` is gone; the three comments in it that were worth keeping moved into
-`deploy/api.yml` and `env.cloudrun.yaml`.
+`fly.toml` was deleted and then restored on 2026-09-21 — see the correction
+above; it is again the live configuration.
 
 Migrations run at startup and are idempotent — verified by running the whole
 set twice against a real database. Postgres has no
@@ -251,38 +274,51 @@ moved them out and deleted `deploy/`, which meant a corrected workflow could
 not report itself as newer than the installed one; that is why the sync now
 prints `UPDATED`.
 
-## The move to Cloud Run (2026-09-11)
+## The Cloud Run preparation (2026-09-11) — one part landed, three did not
 
-Four repo changes, and only one of them is application code.
+Read this with the correction at the top of the document. Of the four changes
+below, **only the `db.py` one is in the running system**; the rest describe a
+Cloud Run service that was never created. They are kept because the work is
+done and the reasoning is sound, and because `claude/cloud-run-migration.md`
+depends on it if the plan is ever picked up.
 
-**`db.py`: `check=ConnectionPool.check_connection, max_idle=60.0`.** This is
-the one that matters. Cloud Run allocates CPU only while a request is being
-served, so between requests the container is frozen: the pool's maintenance
-thread does not run, while Supabase's pooler goes on closing idle connections
-at the other end. Without a check on checkout, the first query after an idle
-spell hands application code a dead socket — intermittently, in production, on
-whichever endpoint the user happened to open first. `test_pool.py` reproduces
-it with `pg_terminate_backend` and fails without the fix, which was verified by
-removing the fix and watching it fail.
+**`db.py`: `check=ConnectionPool.check_connection, max_idle=60.0`.** *Landed,
+and live.* It was written for Cloud Run, which allocates CPU only while a
+request is being served, so between requests the container is frozen: the
+pool's maintenance thread does not run, while Supabase's pooler goes on
+closing idle connections at the other end. Without a check on checkout, the
+first query after an idle spell hands application code a dead socket —
+intermittently, in production, on whichever endpoint the user happened to open
+first. `test_pool.py` reproduces it with `pg_terminate_backend` and fails
+without the fix, which was verified by removing the fix and watching it fail.
+
+It earns its place on Fly too, and arguably more: a scale-to-zero Machine that
+has been stopped for hours wakes with every pooled connection long dead, which
+is exactly the case the check covers.
 
 The tempting alternative, `--no-cpu-throttling`, switches the service to
 instance-based billing where an idle instance is charged for its whole
 lifetime — which is exactly the bill the move was meant to avoid.
 
-**`Dockerfile`: `JOB_ROOT=/tmp/mb-jobs`.** Only `/tmp` is writable on Cloud
-Run's first-generation execution environment, and on *both* generations every
-write goes into memory and counts against the memory limit. So job files now
-share the 2 GiB with the DEM cache and a calculation's working set, which is
-why `DEM_CACHE_MB` dropped to 64 and `JOB_TTL_MINUTES` to 45.
+**`Dockerfile`: `JOB_ROOT=/tmp/mb-jobs`.** *Landed, but inert.* Only `/tmp` is
+writable on Cloud Run's first-generation execution environment, and on *both*
+generations every write goes into memory and counts against the memory limit —
+which is why `DEM_CACHE_MB` would drop to 64 and `JOB_TTL_MINUTES` to 45 there.
+On Fly this default is overridden: `fly.toml` sets `JOB_ROOT` to
+`/var/lib/masseberegning/jobs`, real disk, with the original 96 MB cache and
+120-minute TTL.
 
 **`deploy/api.yml`: build, push to Artifact Registry, `gcloud run deploy`.**
-Built in Actions rather than with `--source`, because the repo is public so
+*Never committed — it exists only in the working copy on hartlepool, and
+`.github/workflows/api.yml` still deploys to Fly.* Built in Actions rather
+than with `--source`, because the repo is public so
 Actions minutes are free and it keeps Cloud Build out of the picture. Keyless
 auth via Workload Identity Federation, pinned with an `--attribute-condition`
 to this one repository — without that condition the pool will mint a token for
 any repository on the internet that asks.
 
-**`env.cloudrun.yaml` replaces `fly.toml`'s `[env]`.** Committed, because
+**`env.cloudrun.yaml` replaces `fly.toml`'s `[env]`.** *Committed, but nothing
+reads it — the file now carries a NOT IN USE header.* The intent was sound:
 configuration that is not a credential belongs where it can be reviewed. The
 JWKS URL and issuer moved out of secret storage in the process: they contain
 the Supabase project ref, which is already published in `config.js` for the
@@ -293,11 +329,13 @@ Manager.
 What the move does *not* change: the frontend, Pages, Supabase, every redirect
 URL, `ALLOWED_ORIGINS`, `FRONTEND_URL`, and the rest of the application.
 
-Known regression: **cold starts are worse.** Fly's proxy held the request while
-a suspended machine resumed; Cloud Run starts a container from cold, and this
-image imports rasterio, pyproj and shapely before uvicorn binds — 10–20 seconds
-on the first request after idleness. `--min-instances 1` fixes it and costs the
-whole free allowance, so it stays at 0 until someone complains.
+Anticipated regression, never actually incurred: **cold starts would be
+worse.** Fly's proxy holds the request while a stopped machine starts; Cloud
+Run starts a container from cold, and this image imports rasterio, pyproj and
+shapely before uvicorn binds — 10–20 seconds on the first request after
+idleness. `--min-instances 1` would fix it and cost the whole free allowance.
+Since the move did not happen, the cold start in production is still Fly's,
+which is the better of the two.
 
 ---
 
