@@ -36,5 +36,5 @@ window.MB_CONFIG = {
 
   /* Requires custom SMTP in Supabase to be useful - the built-in email service
    * is capped at 2 messages per hour. */
-  allowEmailLink: false,
+  allowEmailLink: true,
 };
